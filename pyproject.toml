@@ -1,0 +1,40 @@
+[project]
+name = "paperdeck"
+version = "0.1.0"
+description = "Scoped, cached reading-list generator and temporal research graph over OpenAlex"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "python-dotenv>=1.0",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+rerank = [
+    "fastembed>=0.4",
+]
+rerank-torch = [
+    "sentence-transformers>=3.0",
+]
+
+[project.scripts]
+paperdeck = "paperdeck.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["paperdeck"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
