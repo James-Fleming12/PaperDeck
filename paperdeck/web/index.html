@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>PaperDeck</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">PaperDeck</div>
+      <nav>
+        <button data-tab="search" class="active">Search</button>
+        <button data-tab="ingest">Ingest</button>
+        <button data-tab="graphs">Graphs</button>
+        <button data-tab="setup">Setup</button>
+      </nav>
+      <div id="key-status" class="badge">checking…</div>
+    </header>
+
+    <main>
+      <section id="tab-search" class="tab active">
+        <form id="search-form" class="panel grid">
+          <label>Category
+            <select name="category">
+              <option value="ml_theory">ML Theory</option>
+              <option value="tcs">Theoretical Computer Science</option>
+              <option value="math">Mathematics</option>
+              <option value="rendering">Rendering</option>
+            </select>
+          </label>
+          <label>Query
+            <input name="query" placeholder="Fourier Analysis, Online Bandits…" required />
+          </label>
+          <label>Paper type
+            <select name="paper_type">
+              <option value="both">Both</option>
+              <option value="theoretical">Theoretical</option>
+              <option value="empirical">Empirical</option>
+            </select>
+          </label>
+          <label>Mode
+            <select name="search_mode">
+              <option value="auto">Auto</option>
+              <option value="default">Keyword</option>
+              <option value="exact">Exact</option>
+              <option value="semantic">Semantic (50 cap)</option>
+            </select>
+          </label>
+          <label>Recency
+            <select name="recency">
+              <option value="any">Any</option>
+              <option value="modern">Modern</option>
+              <option value="foundational">Foundational</option>
+            </select>
+          </label>
+          <label>Results <input name="num_papers" type="number" value="15" min="1" max="100" /></label>
+          <label>Min citations <input name="min_citations" type="number" value="0" min="0" /></label>
+          <label class="check"><input name="high_profile_researchers" type="checkbox" /> High-profile researchers</label>
+          <label class="check"><input name="high_profile_schools" type="checkbox" /> High-profile schools</label>
+          <label class="check"><input name="rerank" type="checkbox" checked /> Local semantic rerank</label>
+          <label class="check"><input name="include_graph" type="checkbox" checked /> Build graphs</label>
+          <button type="submit">Search</button>
+          <p id="search-meta" class="meta"></p>
+        </form>
+        <div id="results" class="results"></div>
+      </section>
+
+      <section id="tab-ingest" class="tab">
+        <form id="ingest-form" class="panel grid">
+          <fieldset class="wide">
+            <legend>Categories</legend>
+            <label class="check"><input type="checkbox" name="category" value="ml_theory" checked /> ML Theory</label>
+            <label class="check"><input type="checkbox" name="category" value="tcs" /> TCS</label>
+            <label class="check"><input type="checkbox" name="category" value="math" /> Math</label>
+            <label class="check"><input type="checkbox" name="category" value="rendering" /> Rendering</label>
+          </fieldset>
+          <label>Min citations <input name="min_citations" type="number" value="20" min="0" /></label>
+          <label>Max works (per category) <input name="max_works" type="number" value="50000" min="1" /></label>
+          <label>Year from <input name="year_from" type="number" placeholder="optional" /></label>
+          <label>Year to <input name="year_to" type="number" placeholder="optional" /></label>
+          <label class="check"><input name="enrich" type="checkbox" /> Fetch author/institution metrics</label>
+          <label class="check"><input name="include_embeddings" type="checkbox" /> Precompute embeddings</label>
+          <button type="submit">Start ingest</button>
+        </form>
+        <div class="panel">
+          <div id="ingest-status" class="meta">Bounded ingest draws from the API, not the 740 GB snapshot.</div>
+          <div class="progress"><div id="ingest-bar" class="bar"></div></div>
+          <pre id="ingest-summary"></pre>
+        </div>
+      </section>
+
+      <section id="tab-graphs" class="tab">
+        <div class="graph-head">
+          <div class="subtabs">
+            <button data-graph="papers" class="active">Papers</button>
+            <button data-graph="authors">Researchers</button>
+          </div>
+          <span id="graph-meta" class="meta"></span>
+        </div>
+        <div class="graph-wrap">
+          <div id="graph-papers" class="graph active"></div>
+          <div id="graph-authors" class="graph"></div>
+          <aside id="popup" class="popup hidden"></aside>
+        </div>
+      </section>
+
+      <section id="tab-setup" class="tab">
+        <form id="setup-form" class="panel grid">
+          <p class="wide meta">
+            Get a free key at
+            <a href="https://openalex.org/settings/api" target="_blank" rel="noreferrer">openalex.org/settings/api</a>.
+            It is stored in <code>~/.config/paperdeck/config.toml</code> (chmod 600), never in the repo.
+          </p>
+          <label class="wide">API key
+            <input name="api_key" type="password" placeholder="paste key" />
+          </label>
+          <button type="submit">Save key</button>
+          <p id="setup-meta" class="meta wide"></p>
+        </form>
+        <div class="panel">
+          <div id="db-stats" class="meta"></div>
+        </div>
+      </section>
+    </main>
+
+    <script src="https://unpkg.com/force-graph"></script>
+    <script src="/static/app.js"></script>
+  </body>
+</html>

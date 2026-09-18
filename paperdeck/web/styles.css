@@ -1,0 +1,169 @@
+:root {
+  --bg: #0f1117;
+  --panel: #171a23;
+  --panel-2: #1f2330;
+  --border: #2a2f3d;
+  --text: #e6e8ee;
+  --muted: #9aa3b2;
+  --accent: #7aa2f7;
+  --accent-2: #9ece6a;
+  --warn: #e0af68;
+  --error: #f7768e;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 18px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.brand { font-weight: 700; letter-spacing: 0.4px; }
+
+nav { display: flex; gap: 6px; }
+
+nav button, .subtabs button {
+  background: transparent;
+  color: var(--muted);
+  border: 1px solid transparent;
+  padding: 6px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+nav button.active, .subtabs button.active {
+  background: var(--panel-2);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.badge {
+  margin-left: auto;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.badge.ok { color: var(--accent-2); }
+.badge.missing { color: var(--warn); }
+
+main { padding: 18px; max-width: 1200px; margin: 0 auto; }
+
+.tab { display: none; }
+.tab.active { display: block; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+  align-items: end;
+}
+
+.grid .wide { grid-column: 1 / -1; }
+
+label { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px; }
+
+label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--text); font-size: 13px; }
+
+input, select {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font: inherit;
+}
+
+fieldset { border: 1px solid var(--border); border-radius: 8px; display: flex; flex-wrap: wrap; gap: 12px; padding: 10px; }
+fieldset legend { color: var(--muted); font-size: 12px; padding: 0 4px; }
+
+button[type="submit"], button.primary {
+  background: var(--accent);
+  color: #0b0e14;
+  border: none;
+  border-radius: 8px;
+  padding: 9px 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+button:disabled { opacity: 0.5; cursor: default; }
+
+.meta { color: var(--muted); font-size: 12px; }
+
+.results { display: flex; flex-direction: column; gap: 10px; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+.card h3 { margin: 0 0 6px; font-size: 15px; }
+.card .authors { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
+.card .tags { display: flex; gap: 8px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+.card a { color: var(--accent); text-decoration: none; }
+.card a:hover { text-decoration: underline; }
+
+.progress { height: 8px; background: var(--panel-2); border-radius: 999px; overflow: hidden; margin: 10px 0; }
+.bar { height: 100%; width: 0; background: var(--accent); transition: width 0.3s; }
+
+pre { white-space: pre-wrap; color: var(--muted); font-size: 12px; margin: 0; }
+
+.graph-head { display: flex; align-items: center; gap: 16px; margin-bottom: 10px; }
+.graph-wrap { position: relative; height: 72vh; }
+.graph {
+  position: absolute;
+  inset: 0;
+  background: #0b0e14;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: none;
+}
+.graph.active { display: block; }
+
+.popup {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 340px;
+  max-height: 90%;
+  overflow: auto;
+  background: rgba(23, 26, 35, 0.97);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px;
+  z-index: 10;
+}
+.popup.hidden { display: none; }
+.popup h3 { margin: 0 0 6px; font-size: 15px; }
+.popup h4 { margin: 12px 0 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+.popup ul { margin: 0; padding-left: 16px; }
+.popup li { margin-bottom: 6px; font-size: 12px; }
+.popup .close { position: absolute; top: 8px; right: 10px; background: none; border: none; color: var(--muted); font-size: 16px; cursor: pointer; }

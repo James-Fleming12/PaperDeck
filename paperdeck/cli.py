@@ -9,7 +9,7 @@ import typer
 from .config import load_settings, save_api_key
 from .fields import CATEGORIES
 from .openalex import OpenAlexClient, OpenAlexError
-from .service import PaperDeckService, SearchRequest
+from .service import IngestRequest, PaperDeckService, SearchRequest
 
 app = typer.Typer(
     name="paperdeck",
@@ -163,6 +163,61 @@ def search(
 
 
 @app.command()
+def ingest(
+    category: list[str] = typer.Option(
+        ..., "--category", "-c", help="Repeatable. " + ", ".join(CATEGORIES)
+    ),
+    min_citations: int = typer.Option(0, "--min-citations"),
+    max_works: int = typer.Option(100000, "--max-works", help="Per category by default."),
+    year_from: int = typer.Option(None, "--year-from"),
+    year_to: int = typer.Option(None, "--year-to"),
+    per_category: bool = typer.Option(
+        True, "--per-category/--total", help="Apply --max-works per category or overall."
+    ),
+    enrich: bool = typer.Option(
+        False, "--enrich", help="Also fetch author h-index / institution metrics."
+    ),
+    embeddings: bool = typer.Option(
+        False, "--embeddings", help="Precompute local embeddings while ingesting."
+    ),
+    embed_provider: str = typer.Option("auto", "--embed-provider"),
+) -> None:
+    """Bounded bulk ingest of a category into the local cache (no 740 GB snapshot)."""
+    req = IngestRequest(
+        categories=category,
+        min_citations=min_citations,
+        year_from=year_from,
+        year_to=year_to,
+        max_works=max_works,
+        per_category=per_category,
+        enrich=enrich,
+        include_embeddings=embeddings,
+        embedding_provider=embed_provider,
+    )
+
+    def progress(payload: dict) -> None:
+        if payload.get("stage") == "ingesting":
+            typer.echo(
+                f"\r{payload['category_label']}: "
+                f"{payload['fetched']:,}/{payload['category_total']:,}",
+                nl=False,
+            )
+        else:
+            typer.echo()
+
+    try:
+        summary = asyncio.run(_service().ingest(req, progress=progress))
+    except (KeyError, OpenAlexError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"ingested {summary['ingested']:,} works "
+               f"({summary['requests']} requests, ${summary['cost_usd']})")
+    for row in summary["categories"]:
+        typer.echo(f"  {row['label']}: {row['ingested']:,} of {row['available']:,}")
+
+
+@app.command()
 def graph(
     category: str = typer.Option(..., "--category", "-c"),
     query: str = typer.Option(..., "--query", "-q"),
@@ -172,6 +227,7 @@ def graph(
     num: int = typer.Option(25, "--num", "-n"),
     recency: str = typer.Option("any", "--recency"),
     scope: str = typer.Option("reading_list", "--scope", help="reading_list|candidate_pool"),
+    kind: str = typer.Option("both", "--kind", help="both|papers|authors"),
     external_refs: bool = typer.Option(False, "--external-refs"),
     refresh: bool = typer.Option(False, "--refresh"),
 ) -> None:
@@ -185,6 +241,7 @@ def graph(
         recency=recency,
         include_graph=True,
         graph_scope=scope,
+        graph_kind=kind,
         include_external_references=external_refs,
         refresh=refresh,
     )
@@ -209,10 +266,18 @@ def serve(
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8000, "--port"),
     reload: bool = typer.Option(False, "--reload"),
+    open_browser: bool = typer.Option(False, "--open", help="Open the UI in a browser."),
 ) -> None:
-    """Run the FastAPI server."""
+    """Run the local web UI and API."""
+    import threading
+    import webbrowser
+
     import uvicorn
 
+    url = f"http://{host}:{port}/"
+    if open_browser:
+        threading.Timer(1.5, lambda: webbrowser.open(url)).start()
+    typer.echo(f"PaperDeck UI: {url}")
     uvicorn.run("paperdeck.api:app", host=host, port=port, reload=reload)
 
 

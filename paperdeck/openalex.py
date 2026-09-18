@@ -101,6 +101,9 @@ class OpenAlexClient:
         self.timeout = timeout
         self.user_agent = user_agent
         self.last_rate_limit = RateLimitInfo()
+        self.total_cost_usd = 0.0
+        self.total_requests = 0
+        self.last_count = 0
         self._client = httpx.AsyncClient(
             base_url=self.base_url,
             timeout=timeout,
@@ -158,7 +161,11 @@ class OpenAlexClient:
                     f"OpenAlex {response.status_code}: {response.text[:300]}"
                 )
             data = response.json()
-            self._capture_rate_limit(response.headers, data.get("meta", {}).get("cost_usd"))
+            cost = data.get("meta", {}).get("cost_usd")
+            self.total_requests += 1
+            if cost:
+                self.total_cost_usd += cost
+            self._capture_rate_limit(response.headers, cost)
             return data
 
     async def rate_limit(self) -> dict[str, Any]:
@@ -240,6 +247,45 @@ class OpenAlexClient:
             cost_usd=round(cost, 6),
             requests=requests,
         )
+
+    async def iter_works(
+        self,
+        category: Category,
+        year_from: int | None = None,
+        year_to: int | None = None,
+        min_citations: int | None = None,
+        extra_filters: list[str] | None = None,
+        batch: int = 100,
+    ):
+        filters: list[str] = list(category.openalex_filters)
+        if year_from and year_to:
+            filters.append(f"publication_year:{year_from}-{year_to}")
+        elif year_from:
+            filters.append(f"publication_year:>{year_from - 1}")
+        elif year_to:
+            filters.append(f"publication_year:<{year_to + 1}")
+        if extra_filters:
+            filters.extend(extra_filters)
+        filters.append("is_retracted:false")
+        if min_citations:
+            filters.append(f"cited_by_count:>{min_citations - 1}")
+
+        cursor = "*"
+        while True:
+            params = {
+                "filter": ",".join(filters),
+                "per-page": min(batch, MAX_PER_PAGE),
+                "select": WORK_SELECT,
+                "cursor": cursor,
+            }
+            data = await self._get("/works", self._params(params))
+            self.last_count = data.get("meta", {}).get("count", self.last_count)
+            results = data.get("results", [])
+            if results:
+                yield [normalize_work(w) for w in results]
+            cursor = data.get("meta", {}).get("next_cursor")
+            if not results or not cursor:
+                break
 
     async def fetch_works(self, work_ids: list[str]) -> list[dict[str, Any]]:
         out: list[dict[str, Any]] = []

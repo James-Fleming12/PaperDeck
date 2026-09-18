@@ -7,6 +7,17 @@ papers and researchers over time.
 
 Categories: `ml_theory`, `tcs`, `math`, `rendering`.
 
+## Quick start (no CLI required)
+
+```bash
+./launch.sh          # macOS/Linux
+launch.bat           # Windows
+```
+
+The launcher installs dependencies and opens the local web UI in your browser.
+There you can save your API key, search, run a bounded ingest, and explore the
+paper and researcher graphs. The CLI remains available for everything.
+
 ## Install
 
 ```bash
@@ -52,15 +63,45 @@ uv run paperdeck search -c ml_theory -q "random fourier features" --mode exact \
 # Include the temporal graph in the output
 uv run paperdeck search -c ml_theory -q "random fourier features" --type theoretical --graph --json
 
-# Export a graph to JSON
-uv run paperdeck graph -c math -q "Fourier analysis" -o math_fourier.json --scope reading_list
+# Export a graph to JSON (--kind both|papers|authors)
+uv run paperdeck graph -c math -q "Fourier analysis" -o math_fourier.json --scope reading_list --kind authors
+
+# Bounded ingest: grow the local corpus without the 740 GB snapshot
+uv run paperdeck ingest -c tcs -c rendering --min-citations 20 --max-works 50000
 
 # Cache/budget stats
 uv run paperdeck stats
 
-# FastAPI server (POST /search, POST /graph, GET /categories, GET /stats)
-uv run paperdeck serve --reload
+# Local web UI + API (opens the browser with --open)
+uv run paperdeck serve --open
 ```
+
+## Local web UI
+
+`paperdeck serve --open` (or `./launch.sh`) starts the UI at
+<http://127.0.0.1:8000>. It covers the whole workflow with no CLI:
+
+- **Setup** — paste your OpenAlex key; validated and stored outside the repo.
+- **Search** — category, query, theory/empirical, recency, citations, prestige
+  filters, and local rerank. Results list with authors, year, venue, DOI.
+- **Ingest** — bounded bulk fill of the cache per category (min citations,
+  max works, optional author metrics and embeddings) with live progress.
+- **Graphs** — separate **Papers** (citation) and **Researchers** (co-authorship)
+  views. Click any node for details; clicking a researcher shows their recent
+  papers and the ones matching the current query.
+
+## Bounded ingest
+
+Rather than downloading the ~740 GB OpenAlex snapshot, `ingest` pages the API
+with pure filters (list pricing, ~$0.10/1,000 requests) up to a cap:
+
+```bash
+uv run paperdeck ingest -c ml_theory --min-citations 50 --max-works 200000
+uv run paperdeck ingest -c tcs -c rendering --min-citations 20 --max-works 50000 --embeddings
+```
+
+Rough sizing: 200k works ≈ 0.3 GB transferred and ~$0.20; the four categories
+total ~15.7M works (~$16, ~22 GB), which you would rarely need all of.
 
 ## Local embeddings / semantic rerank
 

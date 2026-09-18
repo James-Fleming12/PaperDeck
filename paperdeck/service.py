@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import date
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -45,10 +46,23 @@ class SearchRequest(BaseModel):
     include_graph: bool = False
     include_external_references: bool = False
     graph_scope: Literal["reading_list", "candidate_pool"] = "reading_list"
+    graph_kind: Literal["both", "papers", "authors"] = "both"
     max_candidates: int = Field(default=DEFAULT_CANDIDATES, ge=20, le=MAX_CANDIDATES)
     rerank: bool = False
     embedding_provider: str = "auto"
     refresh: bool = False
+
+
+class IngestRequest(BaseModel):
+    categories: list[str]
+    min_citations: int = 0
+    year_from: int | None = None
+    year_to: int | None = None
+    max_works: int = Field(default=100_000, ge=1, le=20_000_000)
+    per_category: bool = True
+    enrich: bool = False
+    include_embeddings: bool = False
+    embedding_provider: str = "auto"
 
 
 def resolve_recency(req: SearchRequest) -> tuple[int | None, int | None]:
@@ -72,9 +86,10 @@ def resolve_search_mode(req: SearchRequest) -> str:
     return "default"
 
 
-def query_hash(req: SearchRequest, search_mode: str) -> str:
+def query_hash(req: SearchRequest, search_mode: str, category: Category) -> str:
     key = {
         "category": req.category,
+        "filters": category.openalex_filters,
         "query": " ".join(req.query.lower().split()),
         "mode": search_mode,
         "year_from": resolve_recency(req)[0],
@@ -105,7 +120,7 @@ class PaperDeckService:
     async def search(self, req: SearchRequest) -> dict[str, Any]:
         category = get_category(req.category)
         search_mode = resolve_search_mode(req)
-        qhash = query_hash(req, search_mode)
+        qhash = query_hash(req, search_mode, category)
 
         cached = None if req.refresh else self.db.get_cached_query(qhash)
         cache_fresh = cached is not None and _age_days(cached["created_at"]) < CACHE_TTL_DAYS
@@ -140,7 +155,18 @@ class PaperDeckService:
         )
         institution_stats = self._institution_stats(paper_authors, works)
 
+        weights = None
+        if req.rerank:
+            weights = {
+                "relevance": 0.50,
+                "citations_per_year": 0.20,
+                "author_prestige": 0.15,
+                "institution_prestige": 0.10,
+                "recency": 0.05,
+            }
+
         options = RankingOptions(
+            weights=weights,
             paper_type=req.paper_type,
             min_citations=req.min_citations,
             year_from=resolve_recency(req)[0],
@@ -178,6 +204,7 @@ class PaperDeckService:
                 self.db,
                 scope_ids,
                 include_external_references=req.include_external_references,
+                kind=req.graph_kind,
             )
             graph["selected_ids"] = selected_ids
 
@@ -208,6 +235,94 @@ class PaperDeckService:
             },
         }
 
+    async def ingest(
+        self,
+        req: IngestRequest,
+        progress: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        categories = [get_category(key) for key in req.categories]
+        self.db.init()
+
+        results: list[dict[str, Any]] = []
+        overall = 0
+        async with self._client() as client:
+            for category in categories:
+                fetched = 0
+                total = 0
+                async for page in client.iter_works(
+                    category,
+                    year_from=req.year_from,
+                    year_to=req.year_to,
+                    min_citations=req.min_citations,
+                ):
+                    if not total:
+                        total = client.last_count
+                    await self._persist(page, category, client, enrich=req.enrich)
+                    if req.include_embeddings:
+                        self._embed_ids(
+                            req.embedding_provider,
+                            [w["id"] for w in page],
+                            {w["id"]: _embed_text(w) for w in page},
+                        )
+                    fetched += len(page)
+                    overall += len(page)
+                    if progress:
+                        progress(
+                            {
+                                "stage": "ingesting",
+                                "category": category.key,
+                                "category_label": category.label,
+                                "fetched": fetched,
+                                "category_total": total,
+                                "overall": overall,
+                            }
+                        )
+                    reached = (
+                        fetched >= req.max_works
+                        if req.per_category
+                        else overall >= req.max_works
+                    )
+                    if reached:
+                        break
+                results.append(
+                    {
+                        "category": category.key,
+                        "label": category.label,
+                        "available": total,
+                        "ingested": fetched,
+                    }
+                )
+                if not req.per_category and overall >= req.max_works:
+                    break
+
+        summary = {
+            "categories": results,
+            "ingested": sum(r["ingested"] for r in results),
+            "requests": client.total_requests,
+            "cost_usd": round(client.total_cost_usd, 4),
+            "db": self.db.stats(),
+        }
+        if progress:
+            progress({"stage": "done", **summary})
+        return summary
+
+    def _embed_ids(
+        self, provider_name: str, work_ids: list[str], texts: dict[str, str]
+    ) -> int:
+        if not work_ids:
+            return 0
+        provider = get_provider(provider_name)
+        missing = self.db.embeddings_missing(work_ids, provider.name)
+        embedded = 0
+        for i in range(0, len(missing), 64):
+            batch = missing[i : i + 64]
+            vectors = provider.encode([texts[wid] for wid in batch])
+            self.db.upsert_embeddings(
+                provider.name, dict(zip(batch, vectors, strict=True))
+            )
+            embedded += len(batch)
+        return embedded
+
     async def _fetch_and_persist(
         self,
         req: SearchRequest,
@@ -215,7 +330,14 @@ class PaperDeckService:
         search_mode: str,
         qhash: str,
     ) -> tuple[list[str], float, int, int]:
-        fetch_target = min(max(req.max_candidates, req.num_papers * 5), MAX_CANDIDATES)
+        fetch_target = max(req.max_candidates, req.num_papers * 5)
+        if (
+            req.paper_type != "both"
+            or req.high_profile_researchers
+            or req.high_profile_schools
+        ):
+            fetch_target *= 3
+        fetch_target = min(fetch_target, MAX_CANDIDATES)
         async with self._client() as client:
             result = await client.search_works(
                 query=req.query,
@@ -246,7 +368,11 @@ class PaperDeckService:
         return work_ids, cost, requests, count
 
     async def _persist(
-        self, works: list[dict[str, Any]], category: Category, client: OpenAlexClient
+        self,
+        works: list[dict[str, Any]],
+        category: Category,
+        client: OpenAlexClient,
+        enrich: bool = True,
     ) -> None:
         author_ids: set[str] = set()
         institution_ids: set[str] = set()
@@ -293,6 +419,9 @@ class PaperDeckService:
             self.db.set_paper_authors(work["id"], work.get("authorships") or [])
         self.db.add_edges(authorship_edges)
         self.db.add_edges(citation_edges)
+
+        if not enrich:
+            return
 
         need_authors = self.db.authors_needing_enrichment(list(author_ids))
         if need_authors:

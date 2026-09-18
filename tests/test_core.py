@@ -188,3 +188,115 @@ def test_service_rerank_offline(tmp_path: Path) -> None:
     info = service._rerank(req, ["W1", "W2"], works)
     assert info["embedded_now"] == 2
     assert works["W1"]["relevance_score"] > works["W2"]["relevance_score"]
+
+
+def _graph_db(tmp_path: Path) -> Database:
+    db = Database(tmp_path / "g.db")
+    db.init()
+    db.upsert_works(
+        [
+            _make_work("W1", "Fourier analysis of neural networks", 2000, []),
+            _make_work("W2", "Soil carbon spectroscopy", 2020, ["W1"]),
+        ]
+    )
+    db.upsert_authors(
+        [
+            {"id": "A1", "display_name": "Alice", "h_index": 40, "cited_by_count": 100},
+            {"id": "A2", "display_name": "Bob", "h_index": 5, "cited_by_count": 10},
+        ]
+    )
+    db.set_paper_authors("W1", [{"author_id": "A1", "position": 0, "institution_ids": []}])
+    db.set_paper_authors(
+        "W2",
+        [
+            {"author_id": "A1", "position": 0, "institution_ids": []},
+            {"author_id": "A2", "position": 1, "institution_ids": []},
+        ],
+    )
+    db.add_edges([("W2", "W1", "citation", 2020, 1.0)])
+    return db
+
+
+def test_graph_kinds(tmp_path: Path) -> None:
+    db = _graph_db(tmp_path)
+    papers = build_graph(db, ["W1", "W2"], kind="papers")
+    assert all(n["type"] == "paper" for n in papers["nodes"])
+    assert papers["meta"]["author_nodes"] == 0
+    assert papers["meta"]["edge_counts"].get("citation") == 1
+    assert "coauthorship" not in papers["meta"]["edge_counts"]
+
+    authors = build_graph(db, ["W1", "W2"], kind="authors")
+    assert all(n["type"] == "author" for n in authors["nodes"])
+    assert authors["meta"]["edge_counts"].get("coauthorship") == 1
+    assert "citation" not in authors["meta"]["edge_counts"]
+
+
+def test_author_queries(tmp_path: Path) -> None:
+    db = _graph_db(tmp_path)
+    profile = db.get_author("A1")
+    assert profile["display_name"] == "Alice"
+
+    recent = {w["id"] for w in db.works_by_author("A1")}
+    assert recent == {"W1", "W2"}
+
+    matching = db.author_works_matching("A1", "fourier")
+    assert [w["id"] for w in matching] == ["W1"]
+
+
+def test_high_profile_school_parses_institution_ids(tmp_path: Path) -> None:
+    from paperdeck.ranking import RankingOptions, apply_filters
+
+    db = Database(tmp_path / "h.db")
+    db.init()
+    db.upsert_works([_make_work("W1", "Fourier analysis", 2020, [])])
+    db.upsert_authors([{"id": "A1", "display_name": "Alice"}])
+    db.upsert_institutions(
+        [
+            {
+                "id": "I1",
+                "display_name": "Massachusetts Institute of Technology",
+                "cited_by_count": 5_000_000,
+                "works_count": 100_000,
+            }
+        ]
+    )
+    db.set_paper_authors(
+        "W1", [{"author_id": "A1", "position": 0, "institution_ids": ["I1"]}]
+    )
+
+    paper_authors = db.paper_authors_map(["W1"])
+    assert paper_authors["W1"][0]["institution_ids"] == ["I1"]
+
+    works = {w["id"]: w for w in db.get_works(["W1"])}
+    author_stats = db.get_authors(["A1"])
+    institution_stats = db.get_institutions(["I1"])
+    kept = apply_filters(
+        ["W1"],
+        works,
+        paper_authors,
+        author_stats,
+        institution_stats,
+        RankingOptions(high_profile_schools=True),
+    )
+    assert kept == ["W1"]
+
+
+def test_api_smoke(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "cfg"))
+    monkeypatch.setenv("PAPERDECK_DB_PATH", str(tmp_path / "api.db"))
+    monkeypatch.delenv("OPENALEX_API_KEY", raising=False)
+
+    from fastapi.testclient import TestClient
+
+    from paperdeck import api as api_mod
+
+    api_mod._service = None
+    client = TestClient(api_mod.app)
+
+    assert client.get("/health").json() == {"status": "ok"}
+    assert "ml_theory" in client.get("/categories").json()
+    assert client.get("/config").json()["has_api_key"] is False
+    index = client.get("/")
+    assert index.status_code == 200
+    assert "PaperDeck" in index.text
+    assert client.get("/ingest/nope").status_code == 404

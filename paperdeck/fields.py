@@ -79,14 +79,14 @@ CATEGORIES: dict[str, Category] = {
     "ml_theory": Category(
         key="ml_theory",
         label="ML Theory",
-        subfield_ids=("1702", "1703"),
+        subfield_ids=("1702",),
         theory_venues=THEORY_VENUES,
         empirical_venues=EMPIRICAL_VENUES,
     ),
     "tcs": Category(
         key="tcs",
         label="Theoretical Computer Science",
-        subfield_ids=("2614",),
+        subfield_ids=("1703",),
         theory_venues=THEORY_VENUES,
         empirical_venues=EMPIRICAL_VENUES,
     ),

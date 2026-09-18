@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -444,6 +445,49 @@ class Database:
                     out[r["id"]] = dict(r)
         return out
 
+    def get_author(self, author_id: str) -> dict[str, Any] | None:
+        with self.connect() as conn:
+            cur = conn.execute("SELECT * FROM authors WHERE id = ?", (author_id,))
+            row = cur.fetchone()
+        return dict(row) if row else None
+
+    def works_by_author(self, author_id: str, limit: int = 30) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            cur = conn.execute(
+                """
+                SELECT w.* FROM works w
+                JOIN paper_authors pa ON pa.work_id = w.id
+                WHERE pa.author_id = ?
+                ORDER BY w.year DESC, w.cited_by_count DESC
+                LIMIT ?
+                """,
+                (author_id, limit),
+            )
+            return [_row_to_work(r) for r in cur.fetchall()]
+
+    def author_works_matching(
+        self, author_id: str, query: str, limit: int = 30
+    ) -> list[dict[str, Any]]:
+        match = _fts_query(query)
+        if not match:
+            return []
+        with self.connect() as conn:
+            try:
+                cur = conn.execute(
+                    """
+                    SELECT w.* FROM works_fts f
+                    JOIN works w ON w.rowid = f.rowid
+                    JOIN paper_authors pa ON pa.work_id = w.id
+                    WHERE works_fts MATCH ? AND pa.author_id = ?
+                    ORDER BY w.year DESC, w.cited_by_count DESC
+                    LIMIT ?
+                    """,
+                    (match, author_id, limit),
+                )
+                return [_row_to_work(r) for r in cur.fetchall()]
+            except sqlite3.OperationalError:
+                return []
+
     def get_institutions(self, ids: Iterable[str]) -> dict[str, dict[str, Any]]:
         wanted = list(dict.fromkeys(ids))
         out: dict[str, dict[str, Any]] = {}
@@ -478,7 +522,14 @@ class Database:
                     chunk,
                 )
                 for r in cur.fetchall():
-                    out.setdefault(r["work_id"], []).append(dict(r))
+                    link = dict(r)
+                    try:
+                        link["institution_ids"] = json.loads(
+                            link.get("institution_ids") or "[]"
+                        )
+                    except (TypeError, json.JSONDecodeError):
+                        link["institution_ids"] = []
+                    out.setdefault(r["work_id"], []).append(link)
         return out
 
     def get_cached_query(self, query_hash: str) -> dict[str, Any] | None:
@@ -605,6 +656,14 @@ class Database:
 def _chunks(items: list[Any], size: int) -> Iterator[list[Any]]:
     for i in range(0, len(items), size):
         yield items[i : i + size]
+
+
+def _fts_query(query: str) -> str | None:
+    tokens = re.findall(r"[a-z0-9]+", query.lower())
+    tokens = [t for t in tokens if len(t) > 1]
+    if not tokens:
+        return None
+    return " ".join(f'"{token}"' for token in tokens)
 
 
 def _row_to_work(row: sqlite3.Row) -> dict[str, Any]:
