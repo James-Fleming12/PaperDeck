@@ -70,6 +70,10 @@ uv run paperdeck graph -c math -q "Fourier analysis" -o math_fourier.json --scop
 uv run paperdeck view -c math --min-citations 100 -o math_graph.json
 uv run paperdeck view --subfield 1703 --min-h-index 30 --kind authors -o tcs_authors.json
 
+# Query the cached corpus as a list, and export it
+uv run paperdeck library -c math --min-citations 100 --sort year_desc -n 25
+uv run paperdeck library -c tcs --export bibtex -o tcs.bib
+
 # Bounded ingest: grow the local corpus without the 740 GB snapshot
 uv run paperdeck ingest -c tcs -c rendering --min-citations 20 --max-works 50000
 
@@ -90,10 +94,19 @@ uv run paperdeck serve --open
   filters, and local rerank. Results list with authors, year, venue, DOI.
 - **Ingest** — bounded bulk fill of the cache per category (min citations,
   max works, optional author metrics and embeddings) with live progress.
+- **Links** — four types you can toggle: **citation** (paper→paper),
+  **co-authorship** (researcher↔researcher), **concept** (nodes sharing OpenAlex
+  topics, weight = shared-topic count), and **authorship** (in the combined view).
+  Concept links are computed from `work_topics` with a tunable `min shared topics`
+  and `min link weight`, so the graph is connected by ideas, not just references.
 - **Theme** — light by default, with a **Rosé Pine** dark palette via the header
-  toggle (persisted). Nodes are drawn as blocks coloured by OpenAlex field
+  toggle (persisted). Square nodes are drawn as blocks coloured by OpenAlex field
   (Computer Science, Mathematics, Engineering, …) with a legend; query hits are
-  highlighted.
+  highlighted. Isolated nodes are hidden by default for a cleaner view.
+- **Library** — a **queryable list** of the persistent cache, the list counterpart
+  to the graph. Filter by category, subfield, text, theory label, year, citations,
+  and author h-index; sort by citations/year/title; paginate; and export the whole
+  filtered set to **CSV** or **BibTeX**.
 - **Graphs** — a **persistent** graph built from everything in the local cache,
   with separate **Papers** (citation) and **Researchers** (co-authorship) tabs.
   It accumulates across queries and restarts rather than resetting. Prune the
@@ -111,6 +124,10 @@ uv run paperdeck serve --open
 - Reranking is capped to the top 200 candidates in OpenAlex relevance order and
   only embeds vectors it hasn't cached; a warm-cache query completes in well
   under a second.
+- Graph rendering caches theme colours and the selected-node set (no
+  `getComputedStyle` in the draw loop), tunes the force simulation, defers
+  building until the Graphs tab is opened, and reuses the last build until data
+  or filters change. A 2,000-paper graph builds server-side in ~0.2 s.
 - When filters are active the candidate pool is over-fetched 2× so a strict
   filter can still fill your requested count.
 - A 429 from OpenAlex fails fast with a clear message instead of hanging in

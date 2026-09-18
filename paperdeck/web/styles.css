@@ -161,7 +161,59 @@ input, select {
 
 input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: 0; }
 
-input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); }
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border: 2px solid var(--border-strong);
+  background: var(--panel-2);
+  display: inline-grid;
+  place-content: center;
+  cursor: pointer;
+}
+input[type="checkbox"]::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  transform: scale(0);
+  background: var(--accent);
+  transition: transform 0.08s ease;
+}
+input[type="checkbox"]:checked { border-color: var(--accent); }
+input[type="checkbox"]:checked::before { transform: scale(1); }
+input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); }
+
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.stepper { display: flex; align-items: stretch; }
+.stepper input { flex: 1; min-width: 0; border-right: none; }
+.stepper button {
+  width: 30px;
+  border: 2px solid var(--border);
+  background: var(--panel-2);
+  color: var(--text);
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.stepper button:first-of-type { border-right: none; }
+.stepper button:hover { background: var(--accent); color: var(--bg); }
 
 fieldset {
   border: 2px solid var(--border);

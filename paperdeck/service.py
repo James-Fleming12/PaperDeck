@@ -66,9 +66,27 @@ class GraphRequest(BaseModel):
     text: str | None = None
     min_h_index: int = 0
     include_external_references: bool = False
-    max_papers: int = Field(default=5000, ge=10, le=200_000)
+    concept_edges: bool = True
+    min_shared_topics: int = 2
+    min_link_weight: int = 1
+    max_papers: int = Field(default=2000, ge=10, le=200_000)
     max_nodes: int = Field(default=20_000, ge=100, le=200_000)
     selected_ids: list[str] = []
+
+
+class LibraryRequest(BaseModel):
+    categories: list[str] = []
+    subfield_ids: list[str] = []
+    field_ids: list[str] = []
+    year_from: int | None = None
+    year_to: int | None = None
+    min_citations: int = 0
+    theory_label: Literal["any", "theoretical", "empirical", "mixed"] = "any"
+    text: str | None = None
+    min_h_index: int = 0
+    sort: Literal["citations", "year_desc", "year_asc", "title"] = "citations"
+    offset: int = Field(default=0, ge=0)
+    limit: int = Field(default=50, ge=1, le=500)
 
 
 class IngestRequest(BaseModel):
@@ -256,13 +274,80 @@ class PaperDeckService:
             },
         }
 
+    def library(self, req: LibraryRequest) -> dict[str, Any]:
+        subfields, fields = _resolve_scope(
+            req.categories, req.subfield_ids, req.field_ids
+        )
+        rows, total = self.db.query_works(
+            subfield_ids=subfields or None,
+            field_ids=fields or None,
+            year_from=req.year_from,
+            year_to=req.year_to,
+            min_citations=req.min_citations or None,
+            theory_label=req.theory_label,
+            text=req.text,
+            min_h_index=req.min_h_index,
+            order_by=req.sort,
+            offset=req.offset,
+            limit=req.limit,
+        )
+        papers = self._paper_entries(rows)
+        return {
+            "total": total,
+            "offset": req.offset,
+            "limit": req.limit,
+            "sort": req.sort,
+            "filters": req.model_dump(),
+            "papers": papers,
+        }
+
+    def export_library(
+        self, req: LibraryRequest, fmt: str = "csv", max_rows: int = 10_000
+    ) -> tuple[str, str, str]:
+        subfields, fields = _resolve_scope(
+            req.categories, req.subfield_ids, req.field_ids
+        )
+        rows, _ = self.db.query_works(
+            subfield_ids=subfields or None,
+            field_ids=fields or None,
+            year_from=req.year_from,
+            year_to=req.year_to,
+            min_citations=req.min_citations or None,
+            theory_label=req.theory_label,
+            text=req.text,
+            min_h_index=req.min_h_index,
+            order_by=req.sort,
+            offset=0,
+            limit=max_rows,
+        )
+        papers = self._paper_entries(rows)
+        if fmt == "bibtex":
+            return _to_bibtex(papers), "application/x-bibtex", "paperdeck.bib"
+        return _to_csv(papers), "text/csv", "paperdeck.csv"
+
+    def _paper_entries(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        if not rows:
+            return []
+        ids = [w["id"] for w in rows]
+        paper_authors = self.db.paper_authors_map(ids)
+        author_ids = {
+            link["author_id"]
+            for links in paper_authors.values()
+            for link in links
+            if link.get("author_id")
+        }
+        author_stats = self.db.get_authors(author_ids)
+        return [
+            _paper_entry(work, paper_authors.get(work["id"], []), author_stats)
+            for work in rows
+        ]
+
     def graph_view(self, req: GraphRequest) -> dict[str, Any]:
-        subfields: set[str] = set(req.subfield_ids)
-        fields: set[str] = set(req.field_ids)
-        for key in req.categories:
-            category = get_category(key)
-            subfields.update(category.subfield_ids)
-            fields.update(category.field_ids)
+        subfield_list, field_list = _resolve_scope(
+            req.categories, req.subfield_ids, req.field_ids
+        )
+        subfields = set(subfield_list)
+        fields = set(field_list)
 
         work_ids = self.db.select_work_ids(
             subfield_ids=subfields or None,
@@ -283,6 +368,9 @@ class PaperDeckService:
             max_nodes=req.max_nodes,
             kind=kind,
             min_h_index=req.min_h_index,
+            concept_edges=req.concept_edges,
+            min_shared_topics=req.min_shared_topics,
+            min_link_weight=req.min_link_weight,
         )
         graph["selected_ids"] = list(req.selected_ids)
         graph["filters"] = req.model_dump()
@@ -578,6 +666,105 @@ class PaperDeckService:
             "has_api_key": self.settings.has_key,
             **self.db.stats(),
         }
+
+
+def _resolve_scope(
+    categories: list[str], subfield_ids: list[str], field_ids: list[str]
+) -> tuple[list[str], list[str]]:
+    subfields = set(subfield_ids or [])
+    fields = set(field_ids or [])
+    for key in categories or []:
+        category = get_category(key)
+        subfields.update(category.subfield_ids)
+        fields.update(category.field_ids)
+    return sorted(subfields), sorted(fields)
+
+
+def _paper_entry(
+    work: dict[str, Any],
+    links: list[dict[str, Any]],
+    author_stats: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    ordered = sorted(links, key=lambda link: link.get("position") or 0)
+    authors = []
+    for link in ordered:
+        stats = author_stats.get(link["author_id"]) or {}
+        authors.append(
+            {
+                "id": link["author_id"],
+                "name": link.get("author_name") or stats.get("display_name"),
+                "h_index": stats.get("h_index"),
+            }
+        )
+    doi = work.get("doi")
+    return {
+        "id": work["id"],
+        "title": work.get("title"),
+        "abstract": work.get("abstract"),
+        "year": work.get("year"),
+        "venue": work.get("venue_name"),
+        "type": work.get("type"),
+        "cited_by_count": work.get("cited_by_count"),
+        "theory_label": work.get("theory_label"),
+        "field_id": work.get("field_id"),
+        "subfield_id": work.get("subfield_id"),
+        "doi": doi,
+        "doi_url": f"https://doi.org/{doi}" if doi else None,
+        "openalex_url": f"https://openalex.org/{work['id']}",
+        "authors": authors,
+    }
+
+
+def _to_csv(papers: list[dict[str, Any]]) -> str:
+    import csv
+    import io
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+    writer.writerow(
+        [
+            "id",
+            "title",
+            "authors",
+            "year",
+            "venue",
+            "cited_by_count",
+            "theory_label",
+            "doi",
+            "openalex_url",
+        ]
+    )
+    for paper in papers:
+        writer.writerow(
+            [
+                paper["id"],
+                paper["title"],
+                "; ".join(a["name"] or "" for a in paper["authors"]),
+                paper["year"],
+                paper["venue"],
+                paper["cited_by_count"],
+                paper["theory_label"],
+                paper["doi"],
+                paper["openalex_url"],
+            ]
+        )
+    return buffer.getvalue()
+
+
+def _to_bibtex(papers: list[dict[str, Any]]) -> str:
+    entries = []
+    for paper in papers:
+        fields = [
+            ("title", paper["title"]),
+            ("author", " and ".join(a["name"] or "" for a in paper["authors"])),
+            ("year", paper["year"]),
+            ("journal", paper["venue"]),
+            ("doi", paper["doi"]),
+            ("url", paper["openalex_url"]),
+        ]
+        body = ",\n".join(f"  {k} = {{{v}}}" for k, v in fields if v)
+        entries.append(f"@article{{{paper['id']},\n{body}\n}}")
+    return "\n\n".join(entries) + ("\n" if entries else "")
 
 
 def _embed_text(work: dict[str, Any]) -> str:

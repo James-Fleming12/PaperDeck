@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -14,7 +14,13 @@ from pydantic import BaseModel
 from .config import config_path, load_settings, save_api_key
 from .fields import CATEGORIES
 from .openalex import OpenAlexClient, OpenAlexError
-from .service import GraphRequest, IngestRequest, PaperDeckService, SearchRequest
+from .service import (
+    GraphRequest,
+    IngestRequest,
+    LibraryRequest,
+    PaperDeckService,
+    SearchRequest,
+)
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -144,6 +150,27 @@ def graph_view(req: GraphRequest) -> dict:
 @app.get("/graph/facets")
 def graph_facets() -> dict:
     return get_service().db.facets()
+
+
+@app.post("/library")
+def library(req: LibraryRequest) -> dict:
+    try:
+        return get_service().library(req)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/library/export")
+def library_export(req: LibraryRequest, format: str = "csv") -> Response:
+    try:
+        content, media_type, filename = get_service().export_library(req, format)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return Response(
+        content,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/author/{author_id}")

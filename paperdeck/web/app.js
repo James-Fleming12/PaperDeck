@@ -2,9 +2,14 @@ const state = {
   graph: null,
   lastQuery: "",
   selectedIds: [],
+  selectedSet: new Set(),
+  graphStale: false,
   papers: null,
   authors: null,
   ingestTimer: null,
+  libraryLoaded: false,
+  libraryOffset: 0,
+  libraryTotal: 0,
 };
 
 const LS = {
@@ -12,6 +17,7 @@ const LS = {
   tab: "paperdeck.tab",
   graphTab: "paperdeck.graphTab",
   theme: "paperdeck.theme",
+  library: "paperdeck.library",
 };
 
 const FIELD_NAMES = {
@@ -56,8 +62,31 @@ const FIELD_COLORS = {
 const DEFAULT_COLOR = { light: "#64748b", dark: "#908caa" };
 const HIGHLIGHT = { light: "#ea580c", dark: "#ff9e64" };
 
+const THEME = {
+  border: "#000000",
+  text: "#000000",
+  bg: "#ffffff",
+  citation: "#94a3b8",
+  coauthor: "#047857",
+  concept: "#2563eb",
+};
+
 function cssVar(name) {
   return getComputedStyle(document.body).getPropertyValue(name).trim();
+}
+
+function refreshThemeColors() {
+  THEME.border = cssVar("--node-border") || "#000000";
+  THEME.text = cssVar("--text") || "#000000";
+  THEME.bg = cssVar("--graph-bg") || "#ffffff";
+  THEME.citation = cssVar("--border-strong") || "#94a3b8";
+  THEME.coauthor = cssVar("--accent-2") || "#047857";
+  THEME.concept = cssVar("--accent") || "#2563eb";
+}
+
+function setSelected(ids) {
+  state.selectedIds = ids || [];
+  state.selectedSet = new Set(state.selectedIds);
 }
 
 function currentTheme() {
@@ -74,19 +103,26 @@ function applyTheme(theme) {
   localStorage.setItem(LS.theme, theme);
   const btn = $("#theme-toggle");
   if (btn) btn.textContent = theme === "dark" ? "light" : "dark";
+  refreshThemeColors();
   renderLegend();
   redraw();
 }
 
 function redraw() {
   if (!state.graph) return;
-  const bg = cssVar("--graph-bg") || "#fff";
+  const bg = THEME.bg || "#fff";
   if (state.papers && state.papersData) {
-    state.papers.backgroundColor(bg).graphData(state.papersData);
+    state.papers.backgroundColor(bg).linkColor(linkColorFn).graphData(state.papersData);
   }
   if (state.authors && state.authorsData) {
-    state.authors.backgroundColor(bg).graphData(state.authorsData);
+    state.authors.backgroundColor(bg).linkColor(linkColorFn).graphData(state.authorsData);
   }
+}
+
+function linkColorFn(link) {
+  if (link.type === "concept") return THEME.concept;
+  if (link.type === "coauthorship") return THEME.coauthor;
+  return THEME.citation;
 }
 
 function renderLegend() {
@@ -150,7 +186,11 @@ function activateTab(name) {
   localStorage.setItem(LS.tab, name);
   if (name === "graphs") {
     resizeGraphs();
-    loadGraph();
+    loadGraph(state.graphStale || !state.graph);
+    state.graphStale = false;
+  }
+  if (name === "library" && !state.libraryLoaded) {
+    loadLibrary(0);
   }
 }
 
@@ -237,10 +277,10 @@ $("#search-form").addEventListener("submit", async (event) => {
       `cost $${payload.api.cost_usd} · ${payload.cache.hit ? "cache hit" : "fresh"}` +
       (payload.rerank ? ` · rerank ${payload.rerank.provider}` : "");
     renderResults(payload.papers);
-    state.selectedIds = payload.selected_ids || [];
+    setSelected(payload.selected_ids || []);
     localStorage.setItem(`${LS.prune}.selected`, JSON.stringify(state.selectedIds));
-    if (state.graph) renderGraphs();
-    else loadGraph();
+    state.graphStale = true;
+    if ($("#tab-graphs").classList.contains("active")) loadGraph(true);
     await refreshConfig();
   } catch (err) {
     meta.textContent = `Error: ${err.message}`;
@@ -288,16 +328,17 @@ function paintNode(node, ctx, globalScale) {
   const size = nodeSize(node);
   const x = node.x - size / 2;
   const y = node.y - size / 2;
-  const selected = new Set(state.selectedIds);
-  ctx.fillStyle = selected.has(node.id) ? HIGHLIGHT[currentTheme()] : colorForField(node.field_id);
+  ctx.fillStyle = state.selectedSet.has(node.id)
+    ? HIGHLIGHT[currentTheme()]
+    : colorForField(node.field_id);
   ctx.fillRect(x, y, size, size);
   ctx.lineWidth = Math.max(0.4, 1 / globalScale);
-  ctx.strokeStyle = cssVar("--node-border") || "#000";
+  ctx.strokeStyle = THEME.border;
   ctx.strokeRect(x, y, size, size);
   if (globalScale > 1.5 && node.label) {
     const fs = Math.max(1.6, 9 / globalScale);
     ctx.font = `${fs}px ui-monospace, monospace`;
-    ctx.fillStyle = cssVar("--text") || "#000";
+    ctx.fillStyle = THEME.text;
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
     const label = node.label.length > 46 ? `${node.label.slice(0, 46)}…` : node.label;
@@ -311,27 +352,51 @@ function paintPointer(node, color, ctx) {
   ctx.fillRect(node.x - size / 2, node.y - size / 2, size, size);
 }
 
-function makeGraph(el, linkColor, widthScale, arrows) {
-  return ForceGraph()(el)
+function makeGraph(el, widthScale, arrows) {
+  const graph = ForceGraph()(el)
     .nodeId("id")
     .nodeLabel("label")
     .nodeVal(nodeValue)
-    .backgroundColor(cssVar("--graph-bg") || "#fff")
+    .backgroundColor(THEME.bg)
     .nodeCanvasObject(paintNode)
     .nodePointerAreaPaint(paintPointer)
-    .linkColor(linkColor)
-    .linkWidth((l) => Math.min(1 + (l.weight || 1) * widthScale, 5))
-    .linkDirectionalArrowLength((l) => (arrows && l.type === "citation" ? 3 : 0))
+    .linkColor(linkColorFn)
+    .linkWidth((l) => Math.min(0.6 + (l.weight || 1) * widthScale, 3))
+    .linkDirectionalArrowLength((l) => (arrows && l.type === "citation" ? 2.5 : 0))
+    .cooldownTicks(60)
+    .warmupTicks(0)
+    .d3AlphaDecay(0.035)
+    .d3VelocityDecay(0.38)
     .onNodeClick(showNode);
+  const charge = graph.d3Force("charge");
+  if (charge && charge.strength) charge.strength(-22);
+  const link = graph.d3Force("link");
+  if (link && link.distance) {
+    link.distance((l) => (l.type === "concept" ? 26 : l.type === "citation" ? 40 : 16));
+  }
+  return graph;
 }
 
 function ensureGraphs() {
-  if (!state.papers) {
-    state.papers = makeGraph($("#graph-papers"), () => cssVar("--border-strong"), 0.2, true);
+  if (!state.papers) state.papers = makeGraph($("#graph-papers"), 0.25, true);
+  if (!state.authors) state.authors = makeGraph($("#graph-authors"), 0.3, false);
+}
+
+function tabData(nodes, links, allowed, hideIsolated) {
+  const ids = new Set(nodes.map((n) => n.id));
+  const kept = links
+    .filter((l) => allowed.has(l.type) && ids.has(sid(l.source)) && ids.has(sid(l.target)))
+    .map((l) => ({ source: sid(l.source), target: sid(l.target), ...l }));
+  let keptNodes = nodes;
+  if (hideIsolated) {
+    const touched = new Set();
+    kept.forEach((l) => {
+      touched.add(l.source);
+      touched.add(l.target);
+    });
+    keptNodes = nodes.filter((n) => touched.has(n.id));
   }
-  if (!state.authors) {
-    state.authors = makeGraph($("#graph-authors"), () => cssVar("--border-strong"), 0.25, false);
-  }
+  return { nodes: keptNodes, links: kept };
 }
 
 function renderGraphs() {
@@ -340,25 +405,30 @@ function renderGraphs() {
   const nodes = state.graph.nodes;
   const links = state.graph.links;
 
+  const enabled = new Set(
+    $$('#prune-form input[name="edge"]:checked').map((i) => i.value)
+  );
+  const hideIsolated = $("#hide-isolated")?.checked ?? false;
+
+  const paperAllowed = new Set();
+  if (enabled.has("citation")) paperAllowed.add("citation");
+  if (enabled.has("concept")) paperAllowed.add("concept");
+  const authorAllowed = new Set();
+  if (enabled.has("coauthorship")) authorAllowed.add("coauthorship");
+  if (enabled.has("concept")) authorAllowed.add("concept");
+
   const paperNodes = nodes.filter((n) => n.type === "paper");
-  const paperIds = new Set(paperNodes.map((n) => n.id));
-  const paperLinks = links
-    .filter((l) => l.type === "citation" && paperIds.has(sid(l.source)) && paperIds.has(sid(l.target)))
-    .map((l) => ({ source: sid(l.source), target: sid(l.target), ...l }));
-
   const authorNodes = nodes.filter((n) => n.type === "author");
-  const authorIds = new Set(authorNodes.map((n) => n.id));
-  const authorLinks = links
-    .filter((l) => l.type === "coauthorship" && authorIds.has(sid(l.source)) && authorIds.has(sid(l.target)))
-    .map((l) => ({ source: sid(l.source), target: sid(l.target), ...l }));
+  const papers = tabData(paperNodes, links, paperAllowed, hideIsolated);
+  const authors = tabData(authorNodes, links, authorAllowed, hideIsolated);
 
-  state.papersData = { nodes: paperNodes, links: paperLinks };
-  state.authorsData = { nodes: authorNodes, links: authorLinks };
+  state.papersData = papers;
+  state.authorsData = authors;
   redraw();
 
   $("#graph-count").textContent =
-    `${paperNodes.length} papers / ${paperLinks.length} citations · ` +
-    `${authorNodes.length} researchers / ${authorLinks.length} co-authorships`;
+    `${papers.nodes.length} papers / ${papers.links.length} links · ` +
+    `${authors.nodes.length} researchers / ${authors.links.length} links`;
   $("#graph-meta").textContent =
     `Persistent graph from cache · year range ${state.graph.year_range?.[0] ?? "?"}–` +
     `${state.graph.year_range?.[1] ?? "?"} · selected ${state.selectedIds.length}`;
@@ -382,7 +452,9 @@ function readPruneForm() {
   const subfields = String(form.get("subfields") || "")
     .split(/[\s,]+/)
     .filter(Boolean);
+  const edges = form.getAll("edge");
   return {
+    edge_types: edges,
     kinds: kinds.length ? kinds : ["papers", "authors"],
     categories: form.getAll("category"),
     subfield_ids: subfields,
@@ -394,7 +466,10 @@ function readPruneForm() {
     text: String(form.get("text") || "").trim() || null,
     min_h_index: Number(form.get("min_h_index") || 0),
     include_external_references: form.get("external_refs") === "on",
-    max_papers: Number(form.get("max_papers") || 5000),
+    concept_edges: edges.includes("concept"),
+    min_shared_topics: Number(form.get("min_shared_topics") || 2),
+    min_link_weight: Number(form.get("min_link_weight") || 1),
+    max_papers: Number(form.get("max_papers") || 2000),
     selected_ids: state.selectedIds,
   };
 }
@@ -411,16 +486,26 @@ function writePruneForm(prune) {
   form.subfields.value = (prune.subfield_ids || []).join(", ");
   form.text.value = prune.text || "";
   form.theory_label.value = prune.theory_label || "any";
+  form.min_shared_topics.value = prune.min_shared_topics ?? 2;
+  form.min_link_weight.value = prune.min_link_weight ?? 1;
   form.year_from.value = prune.year_from ?? "";
   form.year_to.value = prune.year_to ?? "";
   form.min_citations.value = prune.min_citations ?? 0;
   form.min_h_index.value = prune.min_h_index ?? 0;
-  form.max_papers.value = prune.max_papers ?? 5000;
+  form.max_papers.value = prune.max_papers ?? 2000;
   form.external_refs.checked = !!prune.include_external_references;
+  const edges = prune.edge_types || ["citation", "coauthorship", "concept"];
+  form.querySelectorAll('input[name="edge"]').forEach(
+    (el) => (el.checked = edges.includes(el.value))
+  );
 }
 
-async function loadGraph() {
+async function loadGraph(force = false) {
   if (!$("#graph-papers")) return;
+  if (state.graph && !force) {
+    renderGraphs();
+    return;
+  }
   const prune = readPruneForm();
   localStorage.setItem(LS.prune, JSON.stringify(prune));
   $("#graph-meta").textContent = "building persistent graph…";
@@ -439,10 +524,16 @@ $("#prune-form").addEventListener("submit", (event) => {
 
 $("#prune-reset").addEventListener("click", () => {
   $("#prune-form").reset();
-  state.selectedIds = [];
+  setSelected([]);
   localStorage.removeItem(`${LS.prune}.selected`);
-  loadGraph();
+  loadGraph(true);
 });
+
+$$('#prune-form input[name="edge"], #hide-isolated').forEach((el) =>
+  el.addEventListener("change", () => {
+    if (state.graph) renderGraphs();
+  })
+);
 
 async function showNode(node) {
   const popup = $("#popup");
@@ -543,16 +634,166 @@ function pollIngest(jobId) {
   }, 1000);
 }
 
+function readLibraryForm() {
+  const form = new FormData($("#library-form"));
+  const subfields = String(form.get("subfields") || "")
+    .split(/[\s,]+/)
+    .filter(Boolean);
+  return {
+    categories: form.getAll("lc"),
+    subfield_ids: subfields,
+    field_ids: [],
+    theory_label: form.get("theory_label") || "any",
+    text: String(form.get("text") || "").trim() || null,
+    year_from: num(form.get("year_from")),
+    year_to: num(form.get("year_to")),
+    min_citations: Number(form.get("min_citations") || 0),
+    min_h_index: Number(form.get("min_h_index") || 0),
+    sort: form.get("sort") || "citations",
+    limit: Number(form.get("limit") || 50),
+  };
+}
+
+function writeLibraryForm(cfg) {
+  const form = $("#library-form");
+  if (!cfg) return;
+  form.querySelectorAll('input[name="lc"]').forEach(
+    (el) => (el.checked = (cfg.categories || []).includes(el.value))
+  );
+  form.subfields.value = (cfg.subfield_ids || []).join(", ");
+  form.text.value = cfg.text || "";
+  form.theory_label.value = cfg.theory_label || "any";
+  form.sort.value = cfg.sort || "citations";
+  form.year_from.value = cfg.year_from ?? "";
+  form.year_to.value = cfg.year_to ?? "";
+  form.min_citations.value = cfg.min_citations ?? 0;
+  form.min_h_index.value = cfg.min_h_index ?? 0;
+  form.limit.value = cfg.limit ?? 50;
+}
+
+async function loadLibrary(offset = 0) {
+  const cfg = readLibraryForm();
+  localStorage.setItem(LS.library, JSON.stringify(cfg));
+  state.libraryOffset = Math.max(0, offset);
+  $("#library-meta").textContent = "loading…";
+  try {
+    const payload = await api("/library", {
+      method: "POST",
+      body: JSON.stringify({ ...cfg, offset: state.libraryOffset }),
+    });
+    state.libraryTotal = payload.total;
+    state.libraryLoaded = true;
+    renderLibrary(payload);
+  } catch (err) {
+    $("#library-meta").textContent = `Error: ${err.message}`;
+  }
+}
+
+function renderLibrary(payload) {
+  const { papers, total, offset, limit } = payload;
+  const from = total ? offset + 1 : 0;
+  const to = Math.min(offset + limit, total);
+  const page = Math.floor(offset / limit) + 1;
+  $("#library-meta").textContent =
+    `${total.toLocaleString()} cached works · showing ${from}–${to} · ` +
+    `page ${page}/${Math.max(1, Math.ceil(total / limit))}`;
+  $("#library-prev").disabled = offset <= 0;
+  $("#library-next").disabled = offset + limit >= total;
+  const root = $("#library-results");
+  if (!papers.length) {
+    root.innerHTML =
+      '<div class="panel">No cached papers match. Run a search or ingest to grow the cache.</div>';
+    return;
+  }
+  root.innerHTML = papers
+    .map((p, i) => {
+      const authors = p.authors.map((a) => esc(a.name || "?")).join(", ");
+      return `<article class="card">
+        <h3>${offset + i + 1}. ${esc(p.title)}</h3>
+        <div class="authors">${authors} · ${esc(p.year ?? "n/a")} · ${esc(p.venue || "n/a")}</div>
+        <div class="tags">
+          <span>cites ${p.cited_by_count ?? 0}</span>
+          <span>${esc(p.theory_label)}</span>
+          <span>field ${esc(p.field_id || "?")}</span>
+          <a href="${esc(p.doi_url || p.openalex_url)}" target="_blank" rel="noreferrer">open</a>
+        </div>
+      </article>`;
+    })
+    .join("");
+}
+
+async function exportLibrary(fmt) {
+  const cfg = readLibraryForm();
+  try {
+    const res = await fetch(`/library/export?format=${fmt}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(cfg),
+    });
+    if (!res.ok) throw new Error(res.statusText);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = fmt === "bibtex" ? "paperdeck.bib" : "paperdeck.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    $("#library-meta").textContent = `Export error: ${err.message}`;
+  }
+}
+
+$("#library-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  loadLibrary(0);
+});
+$("#library-prev").addEventListener("click", () => {
+  const limit = Number($("#library-form").limit.value || 50);
+  loadLibrary(Math.max(0, state.libraryOffset - limit));
+});
+$("#library-next").addEventListener("click", () => {
+  const limit = Number($("#library-form").limit.value || 50);
+  loadLibrary(state.libraryOffset + limit);
+});
+$("#library-csv").addEventListener("click", () => exportLibrary("csv"));
+$("#library-bib").addEventListener("click", () => exportLibrary("bibtex"));
+
+function enhanceNumberInputs(root) {
+  root.querySelectorAll('input[type="number"]').forEach((input) => {
+    if (input.closest(".stepper")) return;
+    const wrap = document.createElement("div");
+    wrap.className = "stepper";
+    input.parentNode.insertBefore(wrap, input);
+    wrap.appendChild(input);
+    [["▲", 1], ["▼", -1]].forEach(([glyph, dir]) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = glyph;
+      btn.addEventListener("click", () => {
+        const stepSize = Number(input.step) || 1;
+        const min = input.min !== "" ? Number(input.min) : null;
+        let value = (Number(input.value) || 0) + dir * stepSize;
+        if (min != null && value < min) value = min;
+        input.value = value;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      wrap.appendChild(btn);
+    });
+  });
+}
+
 async function boot() {
   applyTheme(localStorage.getItem(LS.theme) || "light");
   const savedSel = localStorage.getItem(`${LS.prune}.selected`);
-  if (savedSel) state.selectedIds = JSON.parse(savedSel);
+  setSelected(savedSel ? JSON.parse(savedSel) : []);
+  enhanceNumberInputs(document);
   const prune = localStorage.getItem(LS.prune);
   if (prune) writePruneForm(JSON.parse(prune));
+  const library = localStorage.getItem(LS.library);
+  if (library) writeLibraryForm(JSON.parse(library));
   activateGraphTab(localStorage.getItem(LS.graphTab) || "papers");
   activateTab(localStorage.getItem(LS.tab) || "search");
   await refreshConfig();
-  loadGraph();
 }
 
 boot();

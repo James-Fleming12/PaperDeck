@@ -13,6 +13,7 @@
         <button data-tab="search" class="active">Search</button>
         <button data-tab="ingest">Ingest</button>
         <button data-tab="graphs">Graphs</button>
+        <button data-tab="library">Library</button>
         <button data-tab="setup">Setup</button>
       </nav>
       <div id="key-status" class="badge">checking…</div>
@@ -105,6 +106,13 @@
             <label class="check"><input type="checkbox" name="category" value="math" /> Math</label>
             <label class="check"><input type="checkbox" name="category" value="rendering" /> Rendering</label>
           </fieldset>
+          <fieldset class="wide">
+            <legend>Link types</legend>
+            <label class="check"><input type="checkbox" name="edge" value="citation" checked /> Citations</label>
+            <label class="check"><input type="checkbox" name="edge" value="coauthorship" checked /> Co-authorship</label>
+            <label class="check"><input type="checkbox" name="edge" value="concept" checked /> Concepts (shared topics)</label>
+            <label class="check"><input type="checkbox" id="hide-isolated" checked /> Hide isolated</label>
+          </fieldset>
           <label>Subfield IDs <input name="subfields" placeholder="1703, 2602" /></label>
           <label>Text filter <input name="text" placeholder="Fourier" /></label>
           <label>Theory
@@ -115,14 +123,16 @@
               <option value="mixed">Mixed</option>
             </select>
           </label>
+          <label>Min shared topics <input name="min_shared_topics" type="number" value="2" min="1" /></label>
+          <label>Min link weight <input name="min_link_weight" type="number" value="1" min="1" /></label>
           <label>Year from <input name="year_from" type="number" placeholder="any" /></label>
           <label>Year to <input name="year_to" type="number" placeholder="any" /></label>
           <label>Min citations <input name="min_citations" type="number" value="0" /></label>
           <label>Min h-index <input name="min_h_index" type="number" value="0" /></label>
-          <label>Max papers <input name="max_papers" type="number" value="5000" /></label>
+          <label>Max papers <input name="max_papers" type="number" value="2000" /></label>
           <label class="check"><input name="external_refs" type="checkbox" /> External refs</label>
           <button type="submit">Apply pruning</button>
-          <button type="button" id="prune-reset">Reset view</button>
+          <button type="button" id="prune-reset" class="ghost">Reset view</button>
           <p id="graph-meta" class="meta wide"></p>
         </form>
         <div id="legend" class="legend"></div>
@@ -138,6 +148,48 @@
           <div id="graph-authors" class="graph"></div>
           <aside id="popup" class="popup hidden"></aside>
         </div>
+      </section>
+
+      <section id="tab-library" class="tab">
+        <form id="library-form" class="panel grid">
+          <fieldset class="wide">
+            <legend>Scope categories</legend>
+            <label class="check"><input type="checkbox" name="lc" value="ml_theory" /> ML Theory</label>
+            <label class="check"><input type="checkbox" name="lc" value="tcs" /> TCS</label>
+            <label class="check"><input type="checkbox" name="lc" value="math" /> Math</label>
+            <label class="check"><input type="checkbox" name="lc" value="rendering" /> Rendering</label>
+          </fieldset>
+          <label>Subfield IDs <input name="subfields" placeholder="1703, 2602" /></label>
+          <label>Text filter <input name="text" placeholder="Fourier" /></label>
+          <label>Theory
+            <select name="theory_label">
+              <option value="any">Any</option>
+              <option value="theoretical">Theoretical</option>
+              <option value="empirical">Empirical</option>
+              <option value="mixed">Mixed</option>
+            </select>
+          </label>
+          <label>Sort
+            <select name="sort">
+              <option value="citations">Most cited</option>
+              <option value="year_desc">Newest</option>
+              <option value="year_asc">Oldest</option>
+              <option value="title">Title</option>
+            </select>
+          </label>
+          <label>Year from <input name="year_from" type="number" placeholder="any" /></label>
+          <label>Year to <input name="year_to" type="number" placeholder="any" /></label>
+          <label>Min citations <input name="min_citations" type="number" value="0" /></label>
+          <label>Min h-index <input name="min_h_index" type="number" value="0" /></label>
+          <label>Page size <input name="limit" type="number" value="50" min="1" max="500" /></label>
+          <button type="submit">Apply</button>
+          <button type="button" id="library-prev" class="ghost">Prev</button>
+          <button type="button" id="library-next" class="ghost">Next</button>
+          <button type="button" id="library-csv" class="ghost">Export CSV</button>
+          <button type="button" id="library-bib" class="ghost">Export BibTeX</button>
+          <p id="library-meta" class="meta wide"></p>
+        </form>
+        <div id="library-results" class="results"></div>
       </section>
 
       <section id="tab-setup" class="tab">

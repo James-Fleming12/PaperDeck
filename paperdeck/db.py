@@ -586,6 +586,22 @@ class Database:
                     out.setdefault(r["work_id"], []).append(link)
         return out
 
+    def topics_for_works(self, work_ids: Iterable[str]) -> dict[str, list[str]]:
+        ids = list(dict.fromkeys(work_ids))
+        out: dict[str, list[str]] = {}
+        if not ids:
+            return out
+        with self.connect() as conn:
+            for chunk in _chunks(ids, 500):
+                placeholders = ",".join("?" * len(chunk))
+                cur = conn.execute(
+                    f"SELECT work_id, topic_id FROM work_topics WHERE work_id IN ({placeholders})",
+                    chunk,
+                )
+                for row in cur.fetchall():
+                    out.setdefault(row["work_id"], []).append(row["topic_id"])
+        return out
+
     def get_cached_query(self, query_hash: str) -> dict[str, Any] | None:
         with self.connect() as conn:
             cur = conn.execute(
@@ -699,8 +715,10 @@ class Database:
         return out
 
     ORDER_COLUMNS = {
-        "cited_by_count": "w.cited_by_count",
-        "year": "w.year",
+        "citations": "w.cited_by_count DESC",
+        "year_desc": "w.year DESC",
+        "year_asc": "w.year ASC",
+        "title": "LOWER(w.title) ASC",
     }
 
     def select_work_ids(
@@ -712,56 +730,69 @@ class Database:
         min_citations: int | None = None,
         theory_label: str | None = None,
         text: str | None = None,
-        order_by: str = "cited_by_count",
+        order_by: str = "citations",
         limit: int = 5000,
     ) -> list[str]:
-        where: list[str] = []
-        params: list[Any] = []
-        joins = ""
-
-        subfields = [s for s in (subfield_ids or []) if s]
-        fields = [f for f in (field_ids or []) if f]
-        scope: list[str] = []
-        if subfields:
-            scope.append(f"w.subfield_id IN ({','.join('?' * len(subfields))})")
-            params.extend(subfields)
-        if fields:
-            scope.append(f"w.field_id IN ({','.join('?' * len(fields))})")
-            params.extend(fields)
-        if scope:
-            where.append("(" + " OR ".join(scope) + ")")
-        if year_from is not None:
-            where.append("w.year >= ?")
-            params.append(year_from)
-        if year_to is not None:
-            where.append("w.year <= ?")
-            params.append(year_to)
-        if min_citations:
-            where.append("w.cited_by_count >= ?")
-            params.append(min_citations)
-        if theory_label and theory_label != "any":
-            where.append("w.theory_label = ?")
-            params.append(theory_label)
-
-        match = _fts_query(text) if text else None
-        if match:
-            joins = "JOIN works_fts f ON f.rowid = w.rowid"
-            where.append("works_fts MATCH ?")
-            params.append(match)
-
-        order = self.ORDER_COLUMNS.get(order_by, "w.cited_by_count")
+        joins, where, params = _work_filter(
+            subfield_ids,
+            field_ids,
+            year_from,
+            year_to,
+            min_citations,
+            theory_label,
+            text,
+        )
+        order = self.ORDER_COLUMNS.get(order_by, "w.cited_by_count DESC")
         sql = f"SELECT w.id FROM works w {joins}"
         if where:
             sql += " WHERE " + " AND ".join(where)
-        sql += f" ORDER BY {order} DESC LIMIT ?"
-        params.append(limit)
-
+        sql += f" ORDER BY {order}, w.id LIMIT ?"
         with self.connect() as conn:
             try:
-                cur = conn.execute(sql, params)
+                cur = conn.execute(sql, [*params, limit])
                 return [r["id"] for r in cur.fetchall()]
             except sqlite3.OperationalError:
                 return []
+
+    def query_works(
+        self,
+        subfield_ids: Iterable[str] | None = None,
+        field_ids: Iterable[str] | None = None,
+        year_from: int | None = None,
+        year_to: int | None = None,
+        min_citations: int | None = None,
+        theory_label: str | None = None,
+        text: str | None = None,
+        min_h_index: int = 0,
+        order_by: str = "citations",
+        offset: int = 0,
+        limit: int = 50,
+    ) -> tuple[list[dict[str, Any]], int]:
+        joins, where, params = _work_filter(
+            subfield_ids,
+            field_ids,
+            year_from,
+            year_to,
+            min_citations,
+            theory_label,
+            text,
+            min_h_index,
+        )
+        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        order = self.ORDER_COLUMNS.get(order_by, "w.cited_by_count DESC")
+        with self.connect() as conn:
+            try:
+                total = conn.execute(
+                    f"SELECT COUNT(*) n FROM works w {joins}{clause}", params
+                ).fetchone()["n"]
+                rows = conn.execute(
+                    f"SELECT w.* FROM works w {joins}{clause} "
+                    f"ORDER BY {order}, w.id LIMIT ? OFFSET ?",
+                    [*params, limit, offset],
+                ).fetchall()
+            except sqlite3.OperationalError:
+                return [], 0
+        return [_row_to_work(r) for r in rows], total
 
     def facets(self) -> dict[str, Any]:
         with self.connect() as conn:
@@ -802,6 +833,59 @@ class Database:
 def _chunks(items: list[Any], size: int) -> Iterator[list[Any]]:
     for i in range(0, len(items), size):
         yield items[i : i + size]
+
+
+def _work_filter(
+    subfield_ids: Iterable[str] | None,
+    field_ids: Iterable[str] | None,
+    year_from: int | None,
+    year_to: int | None,
+    min_citations: int | None,
+    theory_label: str | None,
+    text: str | None,
+    min_h_index: int = 0,
+) -> tuple[str, list[str], list[Any]]:
+    where: list[str] = []
+    params: list[Any] = []
+    joins = ""
+
+    subfields = [s for s in (subfield_ids or []) if s]
+    fields = [f for f in (field_ids or []) if f]
+    scope: list[str] = []
+    if subfields:
+        scope.append(f"w.subfield_id IN ({','.join('?' * len(subfields))})")
+        params.extend(subfields)
+    if fields:
+        scope.append(f"w.field_id IN ({','.join('?' * len(fields))})")
+        params.extend(fields)
+    if scope:
+        where.append("(" + " OR ".join(scope) + ")")
+    if year_from is not None:
+        where.append("w.year >= ?")
+        params.append(year_from)
+    if year_to is not None:
+        where.append("w.year <= ?")
+        params.append(year_to)
+    if min_citations:
+        where.append("w.cited_by_count >= ?")
+        params.append(min_citations)
+    if theory_label and theory_label != "any":
+        where.append("w.theory_label = ?")
+        params.append(theory_label)
+    if min_h_index:
+        where.append(
+            "EXISTS (SELECT 1 FROM paper_authors pa JOIN authors a ON a.id = pa.author_id "
+            "WHERE pa.work_id = w.id AND a.h_index >= ?)"
+        )
+        params.append(min_h_index)
+
+    match = _fts_query(text) if text else None
+    if match:
+        joins = "JOIN works_fts f ON f.rowid = w.rowid"
+        where.append("works_fts MATCH ?")
+        params.append(match)
+
+    return joins, where, params
 
 
 def _fts_query(query: str) -> str | None:

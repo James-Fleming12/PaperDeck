@@ -14,6 +14,10 @@ def build_graph(
     max_nodes: int = 20_000,
     kind: str = "both",
     min_h_index: int = 0,
+    concept_edges: bool = False,
+    min_shared_topics: int = 2,
+    max_concept_edges: int = 20_000,
+    min_link_weight: int = 1,
 ) -> dict[str, Any]:
     if kind not in ("both", "papers", "authors"):
         raise ValueError(f"Unknown graph kind '{kind}'")
@@ -174,6 +178,43 @@ def build_graph(
                     }
                 )
 
+    if concept_edges and (want_papers or want_authors):
+        work_topics = db.topics_for_works(corpus_ids)
+        if want_papers:
+            paper_topics = {
+                wid: set(tops) for wid, tops in work_topics.items() if wid in corpus_ids
+            }
+            for a, b, w in _shared_topic_pairs(
+                paper_topics, min_shared_topics, max_concept_edges
+            ):
+                links.append(
+                    {"source": a, "target": b, "type": "concept", "year": None, "weight": float(w)}
+                )
+        if want_authors:
+            author_topics: dict[str, set[str]] = defaultdict(set)
+            for work in corpus:
+                tops = work_topics.get(work["id"])
+                if not tops:
+                    continue
+                for link in paper_authors.get(work["id"], []):
+                    aid = link.get("author_id")
+                    if aid in author_ids:
+                        author_topics[aid].update(tops)
+            for a, b, w in _shared_topic_pairs(
+                author_topics, min_shared_topics, max_concept_edges
+            ):
+                links.append(
+                    {"source": a, "target": b, "type": "concept", "year": None, "weight": float(w)}
+                )
+
+    if min_link_weight > 1:
+        links = [
+            link
+            for link in links
+            if link["type"] not in ("coauthorship", "concept")
+            or link["weight"] >= min_link_weight
+        ]
+
     years = [n["year"] for n in nodes if n.get("year")]
     year_range = [min(years), max(years)] if years else [None, None]
 
@@ -195,6 +236,31 @@ def build_graph(
             "edge_counts": counts,
         },
     }
+
+
+def _shared_topic_pairs(
+    entity_topics: dict[str, set[str]],
+    min_shared: int,
+    cap: int,
+    max_topic_size: int = 60,
+) -> list[tuple[str, str, int]]:
+    inverted: dict[str, list[str]] = defaultdict(list)
+    for entity_id, topics in entity_topics.items():
+        for topic in topics:
+            inverted[topic].append(entity_id)
+
+    counts: Counter = Counter()
+    for entities in inverted.values():
+        if len(entities) < 2 or len(entities) > max_topic_size:
+            continue
+        entities = sorted(entities)
+        for i in range(len(entities)):
+            for j in range(i + 1, len(entities)):
+                counts[(entities[i], entities[j])] += 1
+
+    pairs = [(a, b, c) for (a, b), c in counts.items() if c >= min_shared]
+    pairs.sort(key=lambda p: -p[2])
+    return pairs[:cap]
 
 
 def expand_with_cached_references(db: Database, work_ids: list[str]) -> list[str]:

@@ -266,8 +266,13 @@ def view(
     theory_label: str = typer.Option("any", "--theory-label"),
     text: str = typer.Option(None, "--text", help="Full-text prune filter."),
     min_h_index: int = typer.Option(0, "--min-h-index"),
-    max_papers: int = typer.Option(5000, "--max-papers"),
+    max_papers: int = typer.Option(2000, "--max-papers"),
     external_refs: bool = typer.Option(False, "--external-refs"),
+    concept_edges: bool = typer.Option(
+        True, "--concept-edges/--no-concept-edges", help="Link nodes sharing topics."
+    ),
+    min_shared_topics: int = typer.Option(2, "--min-shared-topics"),
+    min_link_weight: int = typer.Option(1, "--min-link-weight"),
     out: Path = typer.Option(Path("graph.json"), "--out", "-o"),
 ) -> None:
     """Build a pruned view of the persistent cached graph."""
@@ -286,6 +291,9 @@ def view(
         min_h_index=min_h_index,
         max_papers=max_papers,
         include_external_references=external_refs,
+        concept_edges=concept_edges,
+        min_shared_topics=min_shared_topics,
+        min_link_weight=min_link_weight,
     )
     try:
         graph = _service().graph_view(req)
@@ -294,6 +302,60 @@ def view(
         raise typer.Exit(code=1)
     out.write_text(json.dumps(graph, indent=2))
     typer.echo(f"Wrote {out} | {graph['meta']}")
+
+
+@app.command()
+def library(
+    category: list[str] = typer.Option([], "--category", "-c"),
+    subfield: list[str] = typer.Option([], "--subfield"),
+    text: str = typer.Option(None, "--text"),
+    theory_label: str = typer.Option("any", "--theory-label"),
+    year_from: int = typer.Option(None, "--year-from"),
+    year_to: int = typer.Option(None, "--year-to"),
+    min_citations: int = typer.Option(0, "--min-citations"),
+    min_h_index: int = typer.Option(0, "--min-h-index"),
+    sort: str = typer.Option("citations", "--sort", help="citations|year_desc|year_asc|title"),
+    limit: int = typer.Option(25, "--limit", "-n"),
+    offset: int = typer.Option(0, "--offset"),
+    export: str = typer.Option(None, "--export", help="csv|bibtex"),
+    out: Path = typer.Option(None, "--out", "-o"),
+) -> None:
+    """Query the persistent cached corpus as a list."""
+    from .service import LibraryRequest
+
+    req = LibraryRequest(
+        categories=category,
+        subfield_ids=subfield,
+        text=text,
+        theory_label=theory_label,
+        year_from=year_from,
+        year_to=year_to,
+        min_citations=min_citations,
+        min_h_index=min_h_index,
+        sort=sort,
+        limit=limit,
+        offset=offset,
+    )
+    service = _service()
+    if export:
+        content, _, default_name = service.export_library(req, export)
+        target = out or Path(default_name)
+        target.write_text(content)
+        typer.echo(f"Wrote {target}")
+        return
+
+    payload = service.library(req)
+    typer.echo(
+        f"{payload['total']:,} cached works · showing {offset + 1}–"
+        f"{min(offset + limit, payload['total'])}"
+    )
+    for i, paper in enumerate(payload["papers"], offset + 1):
+        authors = ", ".join(a["name"] or "?" for a in paper["authors"]) or "?"
+        typer.echo(f"{i:>4}. {paper['title']}")
+        typer.echo(
+            f"      {authors} ({paper['year']}) | {paper['venue'] or 'n/a'} | "
+            f"cites={paper['cited_by_count']}"
+        )
 
 
 @app.command()

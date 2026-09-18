@@ -236,6 +236,34 @@ def test_graph_kinds(tmp_path: Path) -> None:
     assert "citation" not in authors["meta"]["edge_counts"]
 
 
+def test_concept_edges_from_shared_topics(tmp_path: Path) -> None:
+    db = Database(tmp_path / "c.db")
+    db.init()
+    db.upsert_works(
+        [
+            {**_work("W1", "A", 2020, 5, "1702", "17"), "topic_ids": ["T1", "T2"]},
+            {**_work("W2", "B", 2021, 5, "1702", "17"), "topic_ids": ["T1", "T2"]},
+            {**_work("W3", "C", 2022, 5, "1702", "17"), "topic_ids": ["T3"]},
+        ]
+    )
+    graph = build_graph(
+        db, ["W1", "W2", "W3"], kind="papers", concept_edges=True, min_shared_topics=2
+    )
+    assert graph["meta"]["edge_counts"].get("concept") == 1
+    assert {l["source"] for l in graph["links"] if l["type"] == "concept"} == {"W1"}
+
+    none = build_graph(
+        db, ["W1", "W2", "W3"], kind="papers", concept_edges=True, min_shared_topics=3
+    )
+    assert "concept" not in none["meta"]["edge_counts"]
+
+
+def test_min_link_weight_prunes_coauthorship(tmp_path: Path) -> None:
+    db = _graph_db(tmp_path)
+    graph = build_graph(db, ["W1", "W2"], kind="authors", min_link_weight=2)
+    assert "coauthorship" not in graph["meta"]["edge_counts"]
+
+
 def test_author_queries(tmp_path: Path) -> None:
     db = _graph_db(tmp_path)
     profile = db.get_author("A1")
@@ -340,6 +368,40 @@ def test_graph_view_prunes_low_h_authors(tmp_path: Path) -> None:
     graph = svc.graph_view(GraphRequest(kinds=["authors"], min_h_index=10))
     assert {n["id"] for n in graph["nodes"]} == {"A1"}
     assert graph["meta"]["author_nodes"] == 1
+
+
+def test_library_query_and_export(tmp_path: Path) -> None:
+    from paperdeck.service import LibraryRequest
+
+    db = Database(tmp_path / "lib.db")
+    db.init()
+    db.upsert_works(
+        [
+            _work("W1", "Fourier analysis", 2020, 500, "2602", "26"),
+            _work("W2", "Complexity", 2021, 5, "1703", "17"),
+        ]
+    )
+    db.upsert_authors([{"id": "A1", "display_name": "Alice", "h_index": 40}])
+    db.set_paper_authors_bulk(
+        {"W1": [{"author_id": "A1", "position": 0, "institution_ids": []}]}
+    )
+    svc = PaperDeckService(db=db)
+
+    result = svc.library(LibraryRequest(sort="citations", limit=10))
+    assert result["total"] == 2
+    assert result["papers"][0]["id"] == "W1"
+    assert result["papers"][0]["authors"][0]["name"] == "Alice"
+
+    filtered = svc.library(LibraryRequest(min_h_index=10))
+    assert filtered["total"] == 1 and filtered["papers"][0]["id"] == "W1"
+
+    scoped = svc.library(LibraryRequest(categories=["math"]))
+    assert scoped["total"] == 1 and scoped["papers"][0]["id"] == "W1"
+
+    csv_text, media, _ = svc.export_library(LibraryRequest(), "csv")
+    assert media == "text/csv" and "Fourier analysis" in csv_text
+    bib, media_bib, _ = svc.export_library(LibraryRequest(), "bibtex")
+    assert media_bib == "application/x-bibtex" and "@article{W1" in bib
 
 
 def test_api_smoke(tmp_path: Path, monkeypatch) -> None:
