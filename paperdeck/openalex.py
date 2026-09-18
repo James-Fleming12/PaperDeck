@@ -149,9 +149,14 @@ class OpenAlexClient:
             response = await self._client.get(path, params=params)
             if response.status_code == 429:
                 retry = float(response.headers.get("Retry-After", "1") or 1)
-                if attempt >= 5:
-                    raise OpenAlexError("Rate limited by OpenAlex (429)")
-                await asyncio.sleep(min(retry, 30.0))
+                body = response.text[:200]
+                if attempt >= 2 or retry > 15:
+                    raise OpenAlexError(
+                        "OpenAlex rate limit / daily budget exhausted (429). "
+                        "Configure a free API key with `paperdeck setup` for $1/day. "
+                        f"Details: {body}"
+                    )
+                await asyncio.sleep(min(retry, 10.0))
                 attempt += 1
                 continue
             if response.status_code == 401:

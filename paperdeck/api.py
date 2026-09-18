@@ -14,7 +14,7 @@ from pydantic import BaseModel
 from .config import config_path, load_settings, save_api_key
 from .fields import CATEGORIES
 from .openalex import OpenAlexClient, OpenAlexError
-from .service import IngestRequest, PaperDeckService, SearchRequest
+from .service import GraphRequest, IngestRequest, PaperDeckService, SearchRequest
 
 WEB_DIR = Path(__file__).parent / "web"
 
@@ -129,6 +129,21 @@ async def graph(req: SearchRequest) -> dict:
             "api": payload["api"],
         }
     )
+
+
+@app.post("/graph/view")
+def graph_view(req: GraphRequest) -> dict:
+    try:
+        return get_service().graph_view(req)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/graph/facets")
+def graph_facets() -> dict:
+    return get_service().db.facets()
 
 
 @app.get("/author/{author_id}")

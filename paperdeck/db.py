@@ -41,7 +41,9 @@ CREATE TABLE IF NOT EXISTS works (
 
 CREATE INDEX IF NOT EXISTS idx_works_year ON works(year);
 CREATE INDEX IF NOT EXISTS idx_works_subfield ON works(subfield_id);
+CREATE INDEX IF NOT EXISTS idx_works_field ON works(field_id);
 CREATE INDEX IF NOT EXISTS idx_works_label ON works(theory_label);
+CREATE INDEX IF NOT EXISTS idx_works_cited ON works(cited_by_count);
 
 CREATE TABLE IF NOT EXISTS authors (
     id TEXT PRIMARY KEY,
@@ -152,6 +154,9 @@ class Database:
     def connect(self) -> Iterator[sqlite3.Connection]:
         conn = sqlite3.connect(self.path, timeout=30.0)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA temp_store=MEMORY")
+        conn.execute("PRAGMA cache_size=-20000")
         try:
             yield conn
             conn.commit()
@@ -331,6 +336,55 @@ class Database:
                 for link in rows
                 for iid in (link.get("institution_ids") or [])
             }
+            conn.executemany(
+                "INSERT OR IGNORE INTO paper_institutions(work_id, institution_id) VALUES (?, ?)",
+                list(inst_rows),
+            )
+
+    def set_paper_authors_bulk(
+        self, links_by_work: dict[str, list[dict[str, Any]]]
+    ) -> None:
+        if not links_by_work:
+            return
+        rows: list[tuple[Any, ...]] = []
+        inst_rows: set[tuple[str, str]] = set()
+        for work_id, links in links_by_work.items():
+            for link in links:
+                author_id = link.get("author_id")
+                if not author_id:
+                    continue
+                institution_ids = link.get("institution_ids") or []
+                rows.append(
+                    (
+                        work_id,
+                        author_id,
+                        link.get("position"),
+                        int(bool(link.get("is_corresponding"))),
+                        json.dumps(institution_ids),
+                    )
+                )
+                for iid in institution_ids:
+                    inst_rows.add((work_id, iid))
+        work_ids = list(links_by_work)
+        with self.connect() as conn:
+            for chunk in _chunks(work_ids, 500):
+                placeholders = ",".join("?" * len(chunk))
+                conn.execute(
+                    f"DELETE FROM paper_authors WHERE work_id IN ({placeholders})",
+                    chunk,
+                )
+                conn.execute(
+                    f"DELETE FROM paper_institutions WHERE work_id IN ({placeholders})",
+                    chunk,
+                )
+            conn.executemany(
+                """
+                INSERT OR REPLACE INTO paper_authors
+                    (work_id, author_id, position, is_corresponding, institution_ids)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
             conn.executemany(
                 "INSERT OR IGNORE INTO paper_institutions(work_id, institution_id) VALUES (?, ?)",
                 list(inst_rows),
@@ -643,6 +697,98 @@ class Database:
                 cur = conn.execute(f"SELECT COUNT(*) AS n FROM {table}")
                 out[table] = cur.fetchone()["n"]
         return out
+
+    ORDER_COLUMNS = {
+        "cited_by_count": "w.cited_by_count",
+        "year": "w.year",
+    }
+
+    def select_work_ids(
+        self,
+        subfield_ids: Iterable[str] | None = None,
+        field_ids: Iterable[str] | None = None,
+        year_from: int | None = None,
+        year_to: int | None = None,
+        min_citations: int | None = None,
+        theory_label: str | None = None,
+        text: str | None = None,
+        order_by: str = "cited_by_count",
+        limit: int = 5000,
+    ) -> list[str]:
+        where: list[str] = []
+        params: list[Any] = []
+        joins = ""
+
+        subfields = [s for s in (subfield_ids or []) if s]
+        fields = [f for f in (field_ids or []) if f]
+        scope: list[str] = []
+        if subfields:
+            scope.append(f"w.subfield_id IN ({','.join('?' * len(subfields))})")
+            params.extend(subfields)
+        if fields:
+            scope.append(f"w.field_id IN ({','.join('?' * len(fields))})")
+            params.extend(fields)
+        if scope:
+            where.append("(" + " OR ".join(scope) + ")")
+        if year_from is not None:
+            where.append("w.year >= ?")
+            params.append(year_from)
+        if year_to is not None:
+            where.append("w.year <= ?")
+            params.append(year_to)
+        if min_citations:
+            where.append("w.cited_by_count >= ?")
+            params.append(min_citations)
+        if theory_label and theory_label != "any":
+            where.append("w.theory_label = ?")
+            params.append(theory_label)
+
+        match = _fts_query(text) if text else None
+        if match:
+            joins = "JOIN works_fts f ON f.rowid = w.rowid"
+            where.append("works_fts MATCH ?")
+            params.append(match)
+
+        order = self.ORDER_COLUMNS.get(order_by, "w.cited_by_count")
+        sql = f"SELECT w.id FROM works w {joins}"
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        sql += f" ORDER BY {order} DESC LIMIT ?"
+        params.append(limit)
+
+        with self.connect() as conn:
+            try:
+                cur = conn.execute(sql, params)
+                return [r["id"] for r in cur.fetchall()]
+            except sqlite3.OperationalError:
+                return []
+
+    def facets(self) -> dict[str, Any]:
+        with self.connect() as conn:
+            subfields = [
+                {"id": r["subfield_id"], "count": r["n"]}
+                for r in conn.execute(
+                    "SELECT subfield_id, COUNT(*) n FROM works "
+                    "WHERE subfield_id IS NOT NULL GROUP BY subfield_id ORDER BY n DESC"
+                )
+            ]
+            labels = [
+                {"label": r["theory_label"], "count": r["n"]}
+                for r in conn.execute(
+                    "SELECT theory_label, COUNT(*) n FROM works "
+                    "GROUP BY theory_label ORDER BY n DESC"
+                )
+            ]
+            row = conn.execute(
+                "SELECT MIN(year) lo, MAX(year) hi FROM works"
+            ).fetchone()
+            total = conn.execute("SELECT COUNT(*) n FROM works").fetchone()["n"]
+        return {
+            "total_works": total,
+            "subfields": subfields,
+            "theory_labels": labels,
+            "year_range": [row["lo"], row["hi"]],
+        }
 
     def stats(self) -> dict[str, Any]:
         with self.connect() as conn:

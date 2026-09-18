@@ -66,6 +66,10 @@ uv run paperdeck search -c ml_theory -q "random fourier features" --type theoret
 # Export a graph to JSON (--kind both|papers|authors)
 uv run paperdeck graph -c math -q "Fourier analysis" -o math_fourier.json --scope reading_list --kind authors
 
+# Pruned view of the persistent cached graph (survives restarts)
+uv run paperdeck view -c math --min-citations 100 -o math_graph.json
+uv run paperdeck view --subfield 1703 --min-h-index 30 --kind authors -o tcs_authors.json
+
 # Bounded ingest: grow the local corpus without the 740 GB snapshot
 uv run paperdeck ingest -c tcs -c rendering --min-citations 20 --max-works 50000
 
@@ -86,9 +90,31 @@ uv run paperdeck serve --open
   filters, and local rerank. Results list with authors, year, venue, DOI.
 - **Ingest** — bounded bulk fill of the cache per category (min citations,
   max works, optional author metrics and embeddings) with live progress.
-- **Graphs** — separate **Papers** (citation) and **Researchers** (co-authorship)
-  views. Click any node for details; clicking a researcher shows their recent
-  papers and the ones matching the current query.
+- **Theme** — light by default, with a **Rosé Pine** dark palette via the header
+  toggle (persisted). Nodes are drawn as blocks coloured by OpenAlex field
+  (Computer Science, Mathematics, Engineering, …) with a legend; query hits are
+  highlighted.
+- **Graphs** — a **persistent** graph built from everything in the local cache,
+  with separate **Papers** (citation) and **Researchers** (co-authorship) tabs.
+  It accumulates across queries and restarts rather than resetting. Prune the
+  view by node type, category, raw subfield IDs, text, theory label, year range,
+  min citations, and min author h-index. Search results are highlighted in the
+  graph. Click a paper for details, or a researcher for their recent papers and
+  the ones matching the current query. Prune settings persist in the browser and
+  the graph data persists in SQLite; pruning is non-destructive.
+
+## Performance notes
+
+- HTTP uses brotli (`Accept-Encoding: br`), cutting OpenAlex payloads ~5×.
+- Writes are batched (`set_paper_authors_bulk`) and SQLite runs WAL +
+  `synchronous=NORMAL`, `temp_store=MEMORY`, 20 MB cache.
+- Reranking is capped to the top 200 candidates in OpenAlex relevance order and
+  only embeds vectors it hasn't cached; a warm-cache query completes in well
+  under a second.
+- When filters are active the candidate pool is over-fetched 2× so a strict
+  filter can still fill your requested count.
+- A 429 from OpenAlex fails fast with a clear message instead of hanging in
+  backoff.
 
 ## Bounded ingest
 

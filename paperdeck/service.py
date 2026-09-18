@@ -23,6 +23,7 @@ MODERN_WINDOW_YEARS = 6
 FOUNDATIONAL_MIN_AGE_YEARS = 10
 DEFAULT_CANDIDATES = 300
 MAX_CANDIDATES = 1000
+RERANK_LIMIT = 200
 
 PaperType = Literal["theoretical", "empirical", "both"]
 SearchMode = Literal["auto", "default", "exact", "semantic"]
@@ -51,6 +52,23 @@ class SearchRequest(BaseModel):
     rerank: bool = False
     embedding_provider: str = "auto"
     refresh: bool = False
+
+
+class GraphRequest(BaseModel):
+    categories: list[str] = []
+    subfield_ids: list[str] = []
+    field_ids: list[str] = []
+    kinds: list[Literal["papers", "authors"]] = ["papers", "authors"]
+    year_from: int | None = None
+    year_to: int | None = None
+    min_citations: int = 0
+    theory_label: Literal["any", "theoretical", "empirical", "mixed"] = "any"
+    text: str | None = None
+    min_h_index: int = 0
+    include_external_references: bool = False
+    max_papers: int = Field(default=5000, ge=10, le=200_000)
+    max_nodes: int = Field(default=20_000, ge=100, le=200_000)
+    selected_ids: list[str] = []
 
 
 class IngestRequest(BaseModel):
@@ -138,6 +156,8 @@ class PaperDeckService:
             )
 
         works_list = self.db.get_works(work_ids)
+        order = {wid: i for i, wid in enumerate(work_ids)}
+        works_list.sort(key=lambda w: order.get(w["id"], len(order)))
         if search_mode == "semantic":
             works_list = [
                 w
@@ -226,6 +246,7 @@ class PaperDeckService:
             "kept_after_filters": len(filtered_ids),
             "returned": len(papers),
             "papers": papers,
+            "selected_ids": selected_ids,
             "graph": graph,
             "rerank": rerank_info,
             "api": {
@@ -234,6 +255,38 @@ class PaperDeckService:
                 "budget": budget,
             },
         }
+
+    def graph_view(self, req: GraphRequest) -> dict[str, Any]:
+        subfields: set[str] = set(req.subfield_ids)
+        fields: set[str] = set(req.field_ids)
+        for key in req.categories:
+            category = get_category(key)
+            subfields.update(category.subfield_ids)
+            fields.update(category.field_ids)
+
+        work_ids = self.db.select_work_ids(
+            subfield_ids=subfields or None,
+            field_ids=fields or None,
+            year_from=req.year_from,
+            year_to=req.year_to,
+            min_citations=req.min_citations or None,
+            theory_label=req.theory_label,
+            text=req.text,
+            limit=req.max_papers,
+        )
+        unique_kinds = set(req.kinds)
+        kind = "both" if len(unique_kinds) == 2 else (req.kinds[0] if req.kinds else "both")
+        graph = build_graph(
+            self.db,
+            work_ids,
+            include_external_references=req.include_external_references,
+            max_nodes=req.max_nodes,
+            kind=kind,
+            min_h_index=req.min_h_index,
+        )
+        graph["selected_ids"] = list(req.selected_ids)
+        graph["filters"] = req.model_dump()
+        return graph
 
     async def ingest(
         self,
@@ -336,7 +389,7 @@ class PaperDeckService:
             or req.high_profile_researchers
             or req.high_profile_schools
         ):
-            fetch_target *= 3
+            fetch_target *= 2
         fetch_target = min(fetch_target, MAX_CANDIDATES)
         async with self._client() as client:
             result = await client.search_works(
@@ -415,8 +468,9 @@ class PaperDeckService:
         self.db.upsert_works(works)
         self.db.upsert_authors(list(basic_authors.values()))
         self.db.upsert_institutions(list(basic_institutions.values()))
-        for work in works:
-            self.db.set_paper_authors(work["id"], work.get("authorships") or [])
+        self.db.set_paper_authors_bulk(
+            {work["id"]: work.get("authorships") or [] for work in works}
+        )
         self.db.add_edges(authorship_edges)
         self.db.add_edges(citation_edges)
 
@@ -440,33 +494,31 @@ class PaperDeckService:
         works: dict[str, dict[str, Any]],
     ) -> dict[str, Any]:
         provider = get_provider(req.embedding_provider)
-        texts = {
-            wid: _embed_text(works[wid])
-            for wid in scoped_ids
-        }
-        missing = self.db.embeddings_missing(scoped_ids, provider.name)
+        pool = scoped_ids[:RERANK_LIMIT]
+        texts = {wid: _embed_text(works[wid]) for wid in pool}
+        missing = self.db.embeddings_missing(pool, provider.name)
         embedded = 0
-        batch_size = 64
-        for i in range(0, len(missing), batch_size):
-            batch = missing[i : i + batch_size]
+        for i in range(0, len(missing), 64):
+            batch = missing[i : i + 64]
             vectors = provider.encode([texts[wid] for wid in batch])
             self.db.upsert_embeddings(
                 provider.name, dict(zip(batch, vectors, strict=True))
             )
             embedded += len(batch)
 
-        vectors = self.db.get_embeddings(scoped_ids, provider.name)
+        vectors = self.db.get_embeddings(pool, provider.name)
         query_vec = provider.encode([req.query])[0]
+        pool_set = set(pool)
         for wid in scoped_ids:
             vec = vectors.get(wid)
-            if vec:
-                works[wid]["relevance_score"] = cosine(query_vec, vec)
+            works[wid]["relevance_score"] = cosine(query_vec, vec) if vec else 0.0
         return {
             "enabled": True,
             "provider": provider.name,
             "dim": provider.dim,
+            "pool": len(pool),
             "embedded_now": embedded,
-            "scored": sum(1 for wid in scoped_ids if wid in vectors),
+            "scored": sum(1 for wid in pool_set if wid in vectors),
         }
 
     def _institution_stats(

@@ -16,6 +16,7 @@
         <button data-tab="setup">Setup</button>
       </nav>
       <div id="key-status" class="badge">checking…</div>
+      <button id="theme-toggle" type="button">dark</button>
     </header>
 
     <main>
@@ -91,12 +92,46 @@
       </section>
 
       <section id="tab-graphs" class="tab">
+        <form id="prune-form" class="panel grid">
+          <fieldset class="wide">
+            <legend>Node types</legend>
+            <label class="check"><input type="checkbox" name="kind" value="papers" checked /> Papers</label>
+            <label class="check"><input type="checkbox" name="kind" value="authors" checked /> Researchers</label>
+          </fieldset>
+          <fieldset class="wide">
+            <legend>Scope categories</legend>
+            <label class="check"><input type="checkbox" name="category" value="ml_theory" /> ML Theory</label>
+            <label class="check"><input type="checkbox" name="category" value="tcs" /> TCS</label>
+            <label class="check"><input type="checkbox" name="category" value="math" /> Math</label>
+            <label class="check"><input type="checkbox" name="category" value="rendering" /> Rendering</label>
+          </fieldset>
+          <label>Subfield IDs <input name="subfields" placeholder="1703, 2602" /></label>
+          <label>Text filter <input name="text" placeholder="Fourier" /></label>
+          <label>Theory
+            <select name="theory_label">
+              <option value="any">Any</option>
+              <option value="theoretical">Theoretical</option>
+              <option value="empirical">Empirical</option>
+              <option value="mixed">Mixed</option>
+            </select>
+          </label>
+          <label>Year from <input name="year_from" type="number" placeholder="any" /></label>
+          <label>Year to <input name="year_to" type="number" placeholder="any" /></label>
+          <label>Min citations <input name="min_citations" type="number" value="0" /></label>
+          <label>Min h-index <input name="min_h_index" type="number" value="0" /></label>
+          <label>Max papers <input name="max_papers" type="number" value="5000" /></label>
+          <label class="check"><input name="external_refs" type="checkbox" /> External refs</label>
+          <button type="submit">Apply pruning</button>
+          <button type="button" id="prune-reset">Reset view</button>
+          <p id="graph-meta" class="meta wide"></p>
+        </form>
+        <div id="legend" class="legend"></div>
         <div class="graph-head">
           <div class="subtabs">
             <button data-graph="papers" class="active">Papers</button>
             <button data-graph="authors">Researchers</button>
           </div>
-          <span id="graph-meta" class="meta"></span>
+          <span id="graph-count" class="meta"></span>
         </div>
         <div class="graph-wrap">
           <div id="graph-papers" class="graph active"></div>

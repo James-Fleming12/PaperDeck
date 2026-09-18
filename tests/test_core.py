@@ -8,7 +8,12 @@ from paperdeck.embeddings import get_provider
 from paperdeck.fields import get_category
 from paperdeck.graph import build_graph, expand_with_cached_references
 from paperdeck.openalex import normalize_work, reconstruct_abstract
-from paperdeck.service import SearchRequest, PaperDeckService, dedupe_by_title
+from paperdeck.service import (
+    GraphRequest,
+    PaperDeckService,
+    SearchRequest,
+    dedupe_by_title,
+)
 
 
 def test_reconstruct_abstract() -> None:
@@ -243,6 +248,25 @@ def test_author_queries(tmp_path: Path) -> None:
     assert [w["id"] for w in matching] == ["W1"]
 
 
+def test_set_paper_authors_bulk_idempotent(tmp_path: Path) -> None:
+    db = Database(tmp_path / "b.db")
+    db.init()
+    db.upsert_works([_work("W1", "A", 2020, 5, "1702", "17"), _work("W2", "B", 2021, 5, "1702", "17")])
+    links = {
+        "W1": [{"author_id": "A1", "position": 0, "institution_ids": ["I1"]}],
+        "W2": [
+            {"author_id": "A1", "position": 0, "institution_ids": ["I1"]},
+            {"author_id": "A2", "position": 1, "institution_ids": []},
+        ],
+    }
+    db.set_paper_authors_bulk(links)
+    db.set_paper_authors_bulk(links)
+    pa = db.paper_authors_map(["W1", "W2"])
+    assert len(pa["W1"]) == 1
+    assert len(pa["W2"]) == 2
+    assert pa["W2"][0]["institution_ids"] == ["I1"]
+
+
 def test_high_profile_school_parses_institution_ids(tmp_path: Path) -> None:
     from paperdeck.ranking import RankingOptions, apply_filters
 
@@ -279,6 +303,43 @@ def test_high_profile_school_parses_institution_ids(tmp_path: Path) -> None:
         RankingOptions(high_profile_schools=True),
     )
     assert kept == ["W1"]
+
+
+def _work(wid, title, year, cites, subfield, field):
+    return {
+        "id": wid,
+        "title": title,
+        "year": year,
+        "cited_by_count": cites,
+        "subfield_id": subfield,
+        "field_id": field,
+        "referenced_works": [],
+        "topic_ids": [],
+    }
+
+
+def test_select_work_ids_scope_and_prune(tmp_path: Path) -> None:
+    db = Database(tmp_path / "sw.db")
+    db.init()
+    db.upsert_works(
+        [
+            _work("W1", "Complexity", 2020, 500, "1703", "17"),
+            _work("W2", "Networks", 2021, 5, "1702", "17"),
+            _work("W3", "Harmonic analysis", 2010, 900, "2602", "26"),
+        ]
+    )
+    assert set(db.select_work_ids(subfield_ids=["1703"], field_ids=["26"])) == {"W1", "W3"}
+    assert set(db.select_work_ids(min_citations=100)) == {"W1", "W3"}
+    assert db.select_work_ids(text="networks") == ["W2"]
+    assert {s["id"] for s in db.facets()["subfields"]} == {"1703", "1702", "2602"}
+
+
+def test_graph_view_prunes_low_h_authors(tmp_path: Path) -> None:
+    db = _graph_db(tmp_path)
+    svc = PaperDeckService(db=db)
+    graph = svc.graph_view(GraphRequest(kinds=["authors"], min_h_index=10))
+    assert {n["id"] for n in graph["nodes"]} == {"A1"}
+    assert graph["meta"]["author_nodes"] == 1
 
 
 def test_api_smoke(tmp_path: Path, monkeypatch) -> None:

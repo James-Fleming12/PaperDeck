@@ -256,6 +256,47 @@ def graph(
 
 
 @app.command()
+def view(
+    category: list[str] = typer.Option([], "--category", "-c"),
+    subfield: list[str] = typer.Option([], "--subfield", help="Raw subfield IDs to keep."),
+    kind: str = typer.Option("both", "--kind", help="both|papers|authors"),
+    year_from: int = typer.Option(None, "--year-from"),
+    year_to: int = typer.Option(None, "--year-to"),
+    min_citations: int = typer.Option(0, "--min-citations"),
+    theory_label: str = typer.Option("any", "--theory-label"),
+    text: str = typer.Option(None, "--text", help="Full-text prune filter."),
+    min_h_index: int = typer.Option(0, "--min-h-index"),
+    max_papers: int = typer.Option(5000, "--max-papers"),
+    external_refs: bool = typer.Option(False, "--external-refs"),
+    out: Path = typer.Option(Path("graph.json"), "--out", "-o"),
+) -> None:
+    """Build a pruned view of the persistent cached graph."""
+    from .service import GraphRequest
+
+    kinds = ["papers", "authors"] if kind == "both" else [kind]
+    req = GraphRequest(
+        categories=category,
+        subfield_ids=subfield,
+        kinds=kinds,
+        year_from=year_from,
+        year_to=year_to,
+        min_citations=min_citations,
+        theory_label=theory_label,
+        text=text,
+        min_h_index=min_h_index,
+        max_papers=max_papers,
+        include_external_references=external_refs,
+    )
+    try:
+        graph = _service().graph_view(req)
+    except (KeyError, ValueError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1)
+    out.write_text(json.dumps(graph, indent=2))
+    typer.echo(f"Wrote {out} | {graph['meta']}")
+
+
+@app.command()
 def stats() -> None:
     """Show cache and budget stats."""
     typer.echo(json.dumps(_service().stats(), indent=2))

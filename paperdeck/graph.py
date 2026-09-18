@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter, defaultdict
 from itertools import combinations
 from typing import Any
 
@@ -12,6 +13,7 @@ def build_graph(
     include_external_references: bool = False,
     max_nodes: int = 20_000,
     kind: str = "both",
+    min_h_index: int = 0,
 ) -> dict[str, Any]:
     if kind not in ("both", "papers", "authors"):
         raise ValueError(f"Unknown graph kind '{kind}'")
@@ -47,6 +49,14 @@ def build_graph(
         if want_authors
         else set()
     )
+    author_stats = db.get_authors(author_ids)
+    if min_h_index:
+        author_ids = {
+            aid
+            for aid in author_ids
+            if ((author_stats.get(aid) or {}).get("h_index") or 0) >= min_h_index
+        }
+
     node_ids = (
         (corpus_ids if want_papers else set())
         | {n["id"] for n in external_nodes}
@@ -55,10 +65,19 @@ def build_graph(
     if len(node_ids) > max_nodes:
         raise ValueError(
             f"Graph would contain {len(node_ids)} nodes (limit {max_nodes}). "
-            "Reduce the corpus size or disable external references."
+            "Reduce the corpus size, raise filters, or lower max_nodes."
         )
 
-    author_stats = db.get_authors(author_ids)
+    author_fields: dict[str, Counter] = defaultdict(Counter)
+    if want_authors:
+        for work in corpus:
+            fid = work.get("field_id")
+            if not fid:
+                continue
+            for link in paper_authors.get(work["id"], []):
+                aid = link.get("author_id")
+                if aid in author_ids:
+                    author_fields[aid][fid] += 1
 
     nodes: list[dict[str, Any]] = []
     if want_papers:
@@ -73,12 +92,15 @@ def build_graph(
                     "theory_label": work.get("theory_label"),
                     "venue": work.get("venue_name"),
                     "doi": work.get("doi"),
+                    "field_id": work.get("field_id"),
+                    "subfield_id": work.get("subfield_id"),
                     "external": False,
                 }
             )
         nodes.extend(external_nodes)
     for aid in sorted(author_ids):
         stats = author_stats.get(aid) or {}
+        fields = author_fields.get(aid)
         nodes.append(
             {
                 "id": aid,
@@ -86,6 +108,7 @@ def build_graph(
                 "label": stats.get("display_name"),
                 "h_index": stats.get("h_index"),
                 "cited_by_count": stats.get("cited_by_count"),
+                "field_id": fields.most_common(1)[0][0] if fields else None,
                 "external": False,
             }
         )
@@ -99,7 +122,7 @@ def build_graph(
             authored = [
                 link["author_id"]
                 for link in paper_authors.get(work["id"], [])
-                if link.get("author_id")
+                if link.get("author_id") in author_ids
             ]
             for a, b in combinations(sorted(set(authored)), 2):
                 entry = coauthor_pairs.setdefault(
@@ -125,7 +148,7 @@ def build_graph(
                 wid = work["id"]
                 for link in paper_authors.get(wid, []):
                     aid = link.get("author_id")
-                    if not aid or (wid, aid) in seen_authorship:
+                    if not aid or aid not in author_ids or (wid, aid) in seen_authorship:
                         continue
                     seen_authorship.add((wid, aid))
                     links.append(
