@@ -270,12 +270,7 @@ $("#search-form").addEventListener("submit", async (event) => {
 
   try {
     const payload = await api("/search", { method: "POST", body: JSON.stringify(body) });
-    const q = payload.query;
-    meta.textContent =
-      `${q.category_label} · mode=${q.resolved_search_mode} · ` +
-      `${payload.cache.candidates} candidates · kept ${payload.kept_after_filters} · ` +
-      `cost $${payload.api.cost_usd} · ${payload.cache.hit ? "cache hit" : "fresh"}` +
-      (payload.rerank ? ` · rerank ${payload.rerank.provider}` : "");
+    meta.textContent = describeSearch(payload);
     renderResults(payload.papers);
     setSelected(payload.selected_ids || []);
     localStorage.setItem(`${LS.prune}.selected`, JSON.stringify(state.selectedIds));
@@ -287,23 +282,52 @@ $("#search-form").addEventListener("submit", async (event) => {
   }
 });
 
+function describeSearch(payload) {
+  const label = payload.query.category_label;
+  if (!payload.returned) {
+    return `No papers matched in ${label}. Try removing a filter or using fewer words.`;
+  }
+  const kept = payload.kept_after_filters;
+  const parts = [
+    `Showing ${payload.returned} of ${kept} matching ${kept === 1 ? "paper" : "papers"} in ${label}.`,
+  ];
+  parts.push(
+    payload.rerank
+      ? "Ordered by how closely each paper matches your topic."
+      : "Ordered by relevance and citations."
+  );
+  parts.push(
+    payload.cache.hit ? "Loaded from your saved results." : "Just fetched from OpenAlex."
+  );
+  if (payload.api.cost_usd > 0) {
+    parts.push(`API credit used: $${payload.api.cost_usd.toFixed(4)}.`);
+  }
+  return parts.join(" ");
+}
+
+function theoryWord(label) {
+  return { theoretical: "Theory", empirical: "Empirical", mixed: "Mixed" }[label] || label || "";
+}
+
 function renderResults(papers) {
   const root = $("#results");
   if (!papers.length) {
-    root.innerHTML = '<div class="panel">No papers matched. Try relaxing filters.</div>';
+    root.innerHTML =
+      '<div class="panel">No papers matched. Try removing a filter or using fewer words.</div>';
     return;
   }
   root.innerHTML = papers
     .map((p, i) => {
       const authors = p.authors.map((a) => esc(a.name || "?")).join(", ");
+      const match = Math.round((p.score || 0) * 100);
       return `<article class="card">
         <h3>${i + 1}. ${esc(p.title)}</h3>
         <div class="authors">${authors} · ${esc(p.year ?? "n/a")} · ${esc(p.venue || "n/a")}</div>
         <div class="tags">
-          <span>cites ${p.cited_by_count ?? 0}</span>
-          <span>${esc(p.theory_label)}</span>
-          <span>score ${p.score}</span>
-          <a href="${esc(p.doi_url || p.openalex_url)}" target="_blank" rel="noreferrer">open</a>
+          <span>cited ${p.cited_by_count ?? 0}×</span>
+          <span>${esc(theoryWord(p.theory_label))}</span>
+          <span>${match}% match</span>
+          <a href="${esc(p.doi_url || p.openalex_url)}" target="_blank" rel="noreferrer">Read paper</a>
         </div>
       </article>`;
     })
@@ -427,11 +451,17 @@ function renderGraphs() {
   redraw();
 
   $("#graph-count").textContent =
-    `${papers.nodes.length} papers / ${papers.links.length} links · ` +
-    `${authors.nodes.length} researchers / ${authors.links.length} links`;
+    `${papers.nodes.length.toLocaleString()} papers · ` +
+    `${authors.nodes.length.toLocaleString()} researchers`;
+  const years = state.graph.year_range;
+  const selected = state.selectedIds.length;
   $("#graph-meta").textContent =
-    `Persistent graph from cache · year range ${state.graph.year_range?.[0] ?? "?"}–` +
-    `${state.graph.year_range?.[1] ?? "?"} · selected ${state.selectedIds.length}`;
+    "This is everything you've collected so far" +
+    (years?.[0] ? `, spanning ${years[0]}–${years[1]}` : "") +
+    ". Use the filters above to narrow it down." +
+    (selected
+      ? ` ${selected} paper${selected === 1 ? "" : "s"} from your latest search are highlighted in orange.`
+      : "");
   renderLegend();
   resizeGraphs();
 }
@@ -695,8 +725,8 @@ function renderLibrary(payload) {
   const to = Math.min(offset + limit, total);
   const page = Math.floor(offset / limit) + 1;
   $("#library-meta").textContent =
-    `${total.toLocaleString()} cached works · showing ${from}–${to} · ` +
-    `page ${page}/${Math.max(1, Math.ceil(total / limit))}`;
+    `${total.toLocaleString()} papers in your library · showing ${from}–${to} · ` +
+    `page ${page} of ${Math.max(1, Math.ceil(total / limit))}`;
   $("#library-prev").disabled = offset <= 0;
   $("#library-next").disabled = offset + limit >= total;
   const root = $("#library-results");
@@ -712,10 +742,10 @@ function renderLibrary(payload) {
         <h3>${offset + i + 1}. ${esc(p.title)}</h3>
         <div class="authors">${authors} · ${esc(p.year ?? "n/a")} · ${esc(p.venue || "n/a")}</div>
         <div class="tags">
-          <span>cites ${p.cited_by_count ?? 0}</span>
-          <span>${esc(p.theory_label)}</span>
-          <span>field ${esc(p.field_id || "?")}</span>
-          <a href="${esc(p.doi_url || p.openalex_url)}" target="_blank" rel="noreferrer">open</a>
+          <span>cited ${p.cited_by_count ?? 0}×</span>
+          <span>${esc(theoryWord(p.theory_label))}</span>
+          <span>${esc(FIELD_NAMES[p.field_id] || "Other field")}</span>
+          <a href="${esc(p.doi_url || p.openalex_url)}" target="_blank" rel="noreferrer">Read paper</a>
         </div>
       </article>`;
     })
